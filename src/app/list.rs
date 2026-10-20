@@ -1,0 +1,284 @@
+//! 列表视图状态：搜索、筛选、排序、选中，以及派生出来的「可见行」。
+//!
+//! `visible` 存的是 [`crate::app::catalog::Catalog::entries`] 的下标，因此它必须
+//! 和条目表的版本配对。这里用 `(revision, search, filter, sort, ascending)` 作为
+//! 计算凭据：任何一项变了都会重算，调用方不再需要记得「改完状态要把脏标记置位」，
+//! 下标越界的可能也被这个凭据本身挡死。
+
+use std::time::UNIX_EPOCH;
+
+use crate::model::AppEntry;
+use crate::util::{matches_tokens, query_tokens};
+
+use super::catalog::Catalog;
+use super::state::{DetailTab, Filter, SortKey};
+
+/// 可见行的计算凭据。
+#[derive(PartialEq)]
+struct ComputeKey {
+    revision: usize,
+    search: String,
+    filter: Filter,
+    sort: SortKey,
+    ascending: bool,
+}
+
+/// 纯视图状态，不持有任何系统数据。
+pub(crate) struct ListView {
+    pub(crate) search: String,
+    pub(crate) filter: Filter,
+    pub(crate) sort: SortKey,
+    pub(crate) ascending: bool,
+    pub(crate) selected: Option<String>,
+    pub(crate) detail_tab: DetailTab,
+    pub(crate) files_query: String,
+    /// `Catalog::entries` 的下标，按当前筛选与排序排列。
+    visible: Vec<usize>,
+    computed: Option<ComputeKey>,
+}
+
+impl Default for ListView {
+    fn default() -> Self {
+        Self {
+            search: String::new(),
+            filter: Filter::Gui,
+            sort: SortKey::Name,
+            ascending: true,
+            selected: None,
+            detail_tab: DetailTab::Info,
+            files_query: String::new(),
+            visible: Vec::new(),
+            computed: None,
+        }
+    }
+}
+
+impl ListView {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// 当前筛选条件下应显示的行。
+    pub(crate) fn visible(&self) -> &[usize] {
+        &self.visible
+    }
+
+    /// 凭据是否仍然有效。逐字段比较，避免每帧为搜索词分配一份克隆。
+    fn is_current(&self, catalog: &Catalog) -> bool {
+        self.computed.as_ref().is_some_and(|key| {
+            key.revision == catalog.revision()
+                && key.search == self.search
+                && key.filter == self.filter
+                && key.sort == self.sort
+                && key.ascending == self.ascending
+        })
+    }
+
+    /// 需要时重算可见行；返回是否发生了重算。
+    pub(crate) fn ensure_current(&mut self, catalog: &Catalog) -> bool {
+        if self.is_current(catalog) {
+            return false;
+        }
+
+        let entries = catalog.entries();
+        self.visible = select_visible_entries(
+            entries,
+            &self.search,
+            self.filter,
+            self.sort,
+            self.ascending,
+        );
+        self.computed = Some(ComputeKey {
+            revision: catalog.revision(),
+            search: self.search.clone(),
+            filter: self.filter,
+            sort: self.sort,
+            ascending: self.ascending,
+        });
+
+        // 选中项被筛掉时跟随到第一行，避免出现「右侧详情为空、左侧却没有高亮」。
+        let selected_still_visible = self
+            .selected
+            .as_ref()
+            .is_some_and(|pkg| visible_contains(&self.visible, entries, pkg));
+        if !selected_still_visible {
+            let first = self
+                .visible
+                .first()
+                .map(|&index| entries[index].pkg.clone());
+            self.select(first);
+        }
+        true
+    }
+
+    /// 改变选中项；选中变化要清掉文件页的过滤词。
+    pub(crate) fn select(&mut self, pkg: Option<String>) {
+        if self.selected != pkg {
+            self.selected = pkg;
+            self.files_query.clear();
+        }
+    }
+
+    pub(crate) fn selected_entry<'a>(&self, catalog: &'a Catalog) -> Option<&'a AppEntry> {
+        self.selected.as_deref().and_then(|pkg| catalog.entry(pkg))
+    }
+
+    /// 点击表头：同一列切换方向，不同列改用升序。
+    pub(crate) fn apply_sort_click(&mut self, key: SortKey) {
+        if self.sort == key {
+            self.ascending = !self.ascending;
+        } else {
+            self.sort = key;
+            self.ascending = true;
+        }
+    }
+}
+
+/// 某个包是否仍在可见行里。
+fn visible_contains(visible: &[usize], entries: &[AppEntry], pkg: &str) -> bool {
+    visible
+        .iter()
+        .any(|&index| entries[index].pkg.as_str() == pkg)
+}
+
+/// 按筛选与排序挑选要显示的行下标。
+///
+/// 搜索优先于筛选：一旦有查询词，就在全部应用里搜索，避免「搜得到却被筛掉」。
+fn select_visible_entries(
+    entries: &[AppEntry],
+    search: &str,
+    filter: Filter,
+    sort: SortKey,
+    ascending: bool,
+) -> Vec<usize> {
+    let tokens = query_tokens(search);
+    let mut visible: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            if !tokens.is_empty() {
+                return matches_tokens(&entry.search_text, &tokens);
+            }
+            match filter {
+                Filter::All => true,
+                Filter::Installed => entry.is_installed,
+                Filter::Gui => entry.is_gui,
+                Filter::Held => entry.is_held,
+            }
+        })
+        .map(|(index, _)| index)
+        .collect();
+
+    visible.sort_by(|&left, &right| {
+        let (left, right) = (&entries[left], &entries[right]);
+        let order = match sort {
+            SortKey::Name => left.sort_name.cmp(&right.sort_name),
+            SortKey::Size => left.installed_size_kb.cmp(&right.installed_size_kb),
+            SortKey::Updated => left
+                .updated
+                .unwrap_or(UNIX_EPOCH)
+                .cmp(&right.updated.unwrap_or(UNIX_EPOCH)),
+        };
+        let order = if ascending { order } else { order.reverse() };
+        // 主键相等时用名字与包名兜底，保证顺序稳定（否则同大小、同时间的包
+        // 每次刷新可能互换位置）。
+        order
+            .then_with(|| left.sort_name.cmp(&right.sort_name))
+            .then_with(|| left.pkg.cmp(&right.pkg))
+    });
+    visible
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(pkg: &str, installed: bool, gui: bool, size: u64) -> AppEntry {
+        AppEntry {
+            pkg: pkg.to_string(),
+            display_name: pkg.to_string(),
+            is_installed: installed,
+            is_gui: gui,
+            is_held: false,
+            has_update: false,
+            installed_size_kb: size,
+            updated: None,
+            version: "1".to_string(),
+            latest_version: None,
+            search_text: pkg.to_string(),
+            sort_name: pkg.to_string(),
+        }
+    }
+
+    #[test]
+    fn filters_and_sorts_entries() {
+        let entries = [entry("z", true, false, 10), entry("a", true, true, 20)];
+        let visible = select_visible_entries(&entries, "", Filter::Gui, SortKey::Name, true);
+        assert_eq!(visible, vec![1]);
+        let visible = select_visible_entries(&entries, "", Filter::All, SortKey::Size, false);
+        assert_eq!(visible, vec![1, 0]);
+        // 搜索时忽略筛选条件。
+        let visible = select_visible_entries(&entries, "z", Filter::Gui, SortKey::Name, true);
+        assert_eq!(visible, vec![0]);
+    }
+
+    #[test]
+    fn same_size_entries_keep_a_stable_order() {
+        let entries = [entry("bbb", true, true, 10), entry("aaa", true, true, 10)];
+        let visible = select_visible_entries(&entries, "", Filter::Gui, SortKey::Size, true);
+        assert_eq!(visible, vec![1, 0], "大小相同时按名称升序");
+    }
+
+    #[test]
+    fn recomputes_only_when_inputs_change() {
+        let mut catalog = Catalog::new();
+        catalog.apply(
+            crate::runtime::CatalogUpdate::default()
+                .installed(Ok(crate::model::InstalledData::default())),
+        );
+        let mut list = ListView::new();
+        list.filter = Filter::All;
+
+        assert!(list.ensure_current(&catalog), "首次必须计算");
+        assert!(!list.ensure_current(&catalog), "输入未变不应重算");
+        list.search = "zzz".to_string();
+        assert!(list.ensure_current(&catalog), "换了搜索词要重算");
+    }
+
+    #[test]
+    fn selection_follows_when_filtered_out() {
+        let mut catalog = Catalog::new();
+        let mut data = crate::model::InstalledData::default();
+        for name in ["aaa", "bbb"] {
+            data.packages.insert(
+                name.to_string(),
+                crate::model::InstalledPackage {
+                    metadata: crate::model::PackageMetadata {
+                        name: name.to_string(),
+                        version: "1".to_string(),
+                        arch: "amd64".to_string(),
+                        ..Default::default()
+                    },
+                    dpkg: crate::model::DpkgState::parse("install ok installed"),
+                    control: crate::deb822::Stanza::default(),
+                    files: vec![],
+                    desktop: None,
+                    updated: None,
+                },
+            );
+        }
+        catalog.apply(crate::runtime::CatalogUpdate::default().installed(Ok(data)));
+
+        let mut list = ListView::new();
+        list.filter = Filter::All;
+        list.ensure_current(&catalog);
+        list.select(Some("bbb".to_string()));
+        assert!(list.selected_entry(&catalog).is_some());
+
+        // 换成只看在界面应用：两个包都不是 GUI，选中项应被清空。
+        list.filter = Filter::Gui;
+        list.ensure_current(&catalog);
+        assert!(list.visible().is_empty());
+        assert!(list.selected.is_none());
+    }
+}

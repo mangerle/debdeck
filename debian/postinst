@@ -1,0 +1,14 @@
+#!/bin/sh
+# 安装后刷新桌面数据库与图标缓存，让应用菜单立刻能看到 DebDeck。
+# 两个工具都属于 Recommends 级别的可选依赖：缺失时静默跳过，不能让 dpkg 因为
+# 刷新失败就把整个安装判为失败。
+set -e
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+
+exit 0
