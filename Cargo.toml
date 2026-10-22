@@ -10,17 +10,18 @@ license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.104"
+async-channel = "2.5.0"
 chrono = "0.4.45"
-eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
-egui_extras = "0.37.0"
 flate2 = "1.1.10"
 fs2 = "0.4.3"
+gpui-kit = "0.8.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 lz4_flex = "0.14.0"
 md-5 = "0.11.0"
 pinyin = { version = "0.11.0", default-features = false, features = ["plain"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls", "system-proxy"] }
 sha2 = "0.11.1"
+smallvec = "1.16.3"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
@@ -28,8 +29,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 strip = true
 lto = "thin"
 
-# egui/glow 的调试构建在软件光栅与字体整形上极慢，开发档也需要优化。
-# 依赖用 -1（本 crate 保持 1，避免打断断点调试），第三方依赖全量优化。
+# 第三方依赖（GPUI/wgpu/字体整形）在开发档也需要优化，避免界面掉帧；
+# 本 crate 保持 -1，避免打断断点调试。
 [profile.dev]
 opt-level = 1
 
@@ -52,11 +53,14 @@ similar_names = "allow"
 # 测试里 `assert!(x.is_empty(), "…{x:?}")` 已经带上了失败上下文，
 # 换成 `assert_eq!(x, Vec::new())` 只是形状差异，不放行会持续制造噪声。
 assert_is_empty = "allow"
+# GPUI Kit 的门面把 Window/Context/Element 与样式 trait 集中在 crate 根，
+# 官方用法就是 `use gpui_kit::*;`；逐项导入只会制造噪声。
+wildcard_imports = "allow"
 items_after_statements = "allow"
 
 # Debian 打包元数据：由 cargo-deb 读取（./build-deb.sh）。
 # `$auto` 让 cargo-deb 从产物的 ELF 依赖自己推导动态库清单，
-# 不再手抄一份 libxcb-* 列表——那份清单每次换 eframe 版本都会过期。
+# 不再手抄一份 libxcb-* 列表——那份清单每次换 GPUI/系统库版本都会过期。
 [package.metadata.deb]
 name = "debdeck"
 # 清空 Debian 修订号：产物与 Version 都是 0.1.0，不再出现 0.1.0-1。
@@ -66,8 +70,8 @@ maintainer = "DebDeck Maintainers <debdeck@localhost>"
 copyright = "2026, DebDeck Maintainers"
 section = "admin"
 priority = "optional"
-depends = "apt, pkexec | policykit-1, xdg-utils, ca-certificates, $auto"
-recommends = "fonts-noto-cjk | fonts-wqy-microhei, libnotify-bin"
+depends = "apt, pkexec | policykit-1, xdg-utils, ca-certificates, libvulkan1, libegl1, $auto"
+recommends = "fonts-noto-cjk | fonts-wqy-microhei, libnotify-bin, mesa-vulkan-drivers"
 maintainer-scripts = "debian/"
 # 许可证随包一起装到 /usr/share/doc 下，供用户就地查阅
 license-file = "LICENSE"

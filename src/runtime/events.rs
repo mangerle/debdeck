@@ -89,7 +89,7 @@ pub fn report(error: &anyhow::Error) -> String {
     format!("{error:#}")
 }
 
-/// 可跨线程调用的唤醒函数，用于请求 egui 重新绘制。
+/// 可跨线程调用的唤醒函数，用于请求 GPUI 在下一帧处理事件。
 pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone)]

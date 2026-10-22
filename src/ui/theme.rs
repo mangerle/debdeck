@@ -1,78 +1,147 @@
-//! 配色、字体与排版常量。
+//! 配色、字体与排版。
 //!
-//! 界面里所有颜色都应从这里取：状态标签原先在绘制代码里内联了六组明暗 RGB，
-//! 换主题色时容易漏改。深色/浅色各准备一版是必要的 —— 只给一个颜色在半深色
-//! 背景上会失去对比度。
+//! 颜色不再在绘制代码里内联：主色、状态色与表面色全部来自 gpui-kit 的全局
+//! [`Theme`]，这里只负责在启动时把字体与 Ubuntu 橙注入进去。
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use eframe::egui::{self, Color32, FontData, FontFamily, FontId, TextStyle, Vec2};
+use gpui_kit::component::Theme;
+use gpui_kit::{App, Hsla, SharedString, hsla, px};
 
-/// 主色：Ubuntu 橙。用于强调、选中与主按钮。
-pub(crate) const ACCENT: Color32 = Color32::from_rgb(233, 84, 32);
-/// 成功态（操作完成）。
-pub(crate) const SUCCESS: Color32 = Color32::from_rgb(52, 168, 83);
-/// 警告态（可恢复的问题）。
-pub(crate) const WARNING: Color32 = Color32::from_rgb(230, 145, 40);
-/// 危险态（失败、不可逆操作的确认按钮）。
-pub(crate) const DANGER: Color32 = Color32::from_rgb(204, 51, 51);
+use crate::app::RowStatus;
 
-/// 一对明暗配色，按当前主题选择。
-#[derive(Clone, Copy)]
-pub(crate) struct Palette {
-    pub(crate) dark: Color32,
-    pub(crate) light: Color32,
-}
-
-/// 「已安装」：绿色系。
-pub(crate) const STATUS_INSTALLED: Palette = Palette {
-    dark: Color32::from_rgb(129, 199, 132),
-    light: Color32::from_rgb(35, 120, 55),
-};
-
-/// 「可更新」：橙色系，与主色同族但更亮，避免与选中态混淆。
-pub(crate) const STATUS_UPDATE: Palette = Palette {
-    dark: Color32::from_rgb(255, 183, 77),
-    light: Color32::from_rgb(190, 100, 10),
-};
-
-/// 「已保持版本」：蓝色系，与警告/危险区分开 —— 它是用户主动选择的状态，不是问题。
-pub(crate) const STATUS_HELD: Palette = Palette {
-    dark: Color32::from_rgb(130, 170, 255),
-    light: Color32::from_rgb(40, 90, 190),
-};
-
-/// 链接色同样需要按明暗主题调整，对比度不足会看不清。
-pub(crate) const HYPERLINK: Palette = Palette {
-    dark: Color32::from_rgb(255, 160, 115),
-    light: Color32::from_rgb(190, 60, 20),
-};
-
-/// 加载中文字体并追加到两个字体族末尾。
+/// 启动时配置主题：系统明暗、中文字体与主色。
 ///
-/// egui 自带字体不含 CJK 字形，缺少这一步界面会整片变成方块。
-/// 找不到时只记日志、不失败：加载页仍然可读（英文部分），并让字形测试报错。
-pub(crate) fn configure_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    if let Some((path, bytes)) = find_cjk_font() {
-        let name = "system-cjk".to_string();
-        fonts
-            .font_data
-            .insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
-        // 追加而不是替换：拉丁字符继续用自带字体，中文走系统中文字体。
-        for family in [FontFamily::Proportional, FontFamily::Monospace] {
-            if let Some(list) = fonts.families.get_mut(&family) {
-                list.push(name.clone());
-            }
-        }
-        tracing::info!("已加载中文字体：{}", path.display());
-    } else {
-        tracing::warn!("未找到中文字体，界面中的中文可能无法正常显示");
-    }
-    ctx.set_fonts(fonts);
+/// 传入窗口是必要的：Linux 上 `window.appearance()` 才可靠，`None` 可能拿到
+/// 默认的浅色外观。
+pub(crate) fn configure(cx: &mut App, window: Option<&mut gpui_kit::Window>) {
+    // 先跟随系统明暗，再覆盖品牌色；顺序反了会被主题重载冲掉。
+    Theme::sync_system_appearance(window, cx);
+    let (font_family, mono_family) = load_fonts(cx);
+
+    Theme::update(cx, |theme| {
+        theme.font_family = font_family;
+        theme.mono_font_family = mono_family;
+        theme.font_size = px(15.0);
+        theme.mono_font_size = px(13.0);
+        theme.radius = px(6.0);
+        theme.radius_lg = px(10.0);
+        apply_accent(theme);
+    });
 }
 
+/// Ubuntu 橙。主按钮、选中行与强调文字共用这一组色。
+fn apply_accent(theme: &mut Theme) {
+    let accent = hsla(0.055, 0.86, 0.52, 1.0);
+    let hover = hsla(0.055, 0.86, 0.45, 1.0);
+    let active = hsla(0.055, 0.86, 0.38, 1.0);
+    let foreground = hsla(0.0, 0.0, 1.0, 1.0);
+
+    theme.primary = accent;
+    theme.primary_hover = hover;
+    theme.primary_active = active;
+    theme.primary_foreground = foreground;
+    theme.accent = accent;
+    theme.accent_foreground = foreground;
+    theme.button_primary = accent;
+    theme.button_primary_hover = hover;
+    theme.button_primary_active = active;
+    theme.button_primary_foreground = foreground;
+    theme.ring = accent.opacity(0.45);
+    theme.selection = accent.opacity(0.18);
+    theme.list_active = accent.opacity(0.14);
+    theme.table_active = accent.opacity(0.14);
+    theme.table_active_border = accent;
+}
+
+/// 状态标签的颜色。`已保持` 是用户主动选择，不用警告色。
+pub(crate) fn status_color(theme: &Theme, status: RowStatus) -> Hsla {
+    match status {
+        RowStatus::NotInstalled => theme.muted_foreground,
+        RowStatus::Installed => theme.success,
+        RowStatus::Held => theme.info,
+        RowStatus::Update => theme.warning,
+    }
+}
+
+/// 把系统中文字体注册进 GPUI，并返回 UI/等宽字体族。
+fn load_fonts(cx: &mut App) -> (SharedString, SharedString) {
+    let Some((path, bytes)) = find_cjk_font() else {
+        tracing::warn!("未找到中文字体，界面中的中文可能无法正常显示");
+        return (
+            ".SystemUIFont".into(),
+            default_mono_family()
+                .unwrap_or_else(|| ".SystemUIFont".into())
+                .into(),
+        );
+    };
+
+    if let Err(error) = cx.text_system().add_fonts(vec![Cow::Owned(bytes)]) {
+        tracing::warn!("注册中文字体失败（{}）：{error:#}", path.display());
+    }
+
+    let installed = cx.text_system().all_font_names();
+    let requested = family_from_query("sans-serif:lang=zh-cn")
+        .or_else(|| font_family_from_file(&path))
+        .unwrap_or_else(|| "Noto Sans CJK SC".to_string());
+    let family = if installed.iter().any(|name| name == &requested) {
+        requested
+    } else {
+        tracing::warn!("界面字体 {requested:?} 未被字体系统识别，回退到系统 UI 字体");
+        ".SystemUIFont".to_string()
+    };
+
+    let mono = default_mono_family()
+        .filter(|name| installed.iter().any(|installed| installed == name))
+        .unwrap_or_else(|| family.clone());
+
+    tracing::info!(
+        "界面字体：{family}；等宽字体：{mono}（中文字体 {}）",
+        path.display()
+    );
+    (family.into(), mono.into())
+}
+
+fn default_mono_family() -> Option<String> {
+    family_from_query("monospace")
+}
+
+fn family_from_query(pattern: &str) -> Option<String> {
+    let output = Command::new("fc-match")
+        .args(["-f", "%{family}", pattern])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    first_family(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn font_family_from_file(path: &Path) -> Option<String> {
+    let output = Command::new("fc-query")
+        .args(["-f", "%{family}\n", path.to_str()?])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    first_family(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `fc-query`/`fc-match` 的 family 可能按字形重复多份（如 `Noto Sans CJK SC,Noto Sans CJK SC`），
+/// 取第一行第一个非空项即可。
+fn first_family(output: &str) -> Option<String> {
+    let first = output.lines().next()?;
+    let family = first
+        .split(',')
+        .map(str::trim)
+        .find(|name| !name.is_empty())?;
+    Some(family.to_string())
+}
+
+/// 按常见路径与 fontconfig 的匹配结果寻找中文字体。
 pub(crate) fn find_cjk_font() -> Option<(PathBuf, Vec<u8>)> {
     let mut candidates: Vec<PathBuf> = [
         "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
@@ -87,14 +156,16 @@ pub(crate) fn find_cjk_font() -> Option<(PathBuf, Vec<u8>)> {
     .map(PathBuf::from)
     .collect();
 
-    if let Ok(output) = std::process::Command::new("fc-match")
+    if let Ok(output) = Command::new("fc-match")
         .args(["-f", "%{file}", "sans-serif:lang=zh-cn"])
         .output()
         && output.status.success()
     {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !path.is_empty() {
-            candidates.push(PathBuf::from(path));
+            // fontconfig 的匹配结果优先：它通常是发行版为中文挑选的完整字体
+            // （Ubuntu 上是 Noto Sans CJK SC），比硬编码的兜底路径更合适。
+            candidates.insert(0, PathBuf::from(path));
         }
     }
 
@@ -109,157 +180,20 @@ pub(crate) fn find_cjk_font() -> Option<(PathBuf, Vec<u8>)> {
     None
 }
 
-pub(crate) fn configure_style(ctx: &egui::Context) {
-    ctx.all_styles_mut(|style| {
-        style
-            .text_styles
-            .insert(TextStyle::Body, FontId::new(15.0, FontFamily::Proportional));
-        style.text_styles.insert(
-            TextStyle::Button,
-            FontId::new(15.0, FontFamily::Proportional),
-        );
-        style.text_styles.insert(
-            TextStyle::Heading,
-            FontId::new(22.0, FontFamily::Proportional),
-        );
-        style.text_styles.insert(
-            TextStyle::Small,
-            FontId::new(12.0, FontFamily::Proportional),
-        );
-        style.text_styles.insert(
-            TextStyle::Monospace,
-            FontId::new(13.0, FontFamily::Monospace),
-        );
-        style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-        style.spacing.button_padding = Vec2::new(10.0, 5.0);
-        style.visuals.selection.bg_fill = ACCENT.gamma_multiply(0.35);
-        style.visuals.hyperlink_color = if style.visuals.dark_mode {
-            HYPERLINK.dark
-        } else {
-            HYPERLINK.light
-        };
-        style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
-        style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
-        style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
-        style.visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
-    });
-}
-
-/// 界面字体（Ubuntu + 系统中文字体）不含箭头等符号，用错字形会直接显示成方块。
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
-    use std::fs;
-
-    fn is_cjk(c: char) -> bool {
-        matches!(c as u32,
-            0x2E80..=0x2EFF | 0x3000..=0x303F | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
-            | 0xFF00..=0xFFEF)
-    }
-
-    /// 收集源码里**字符串字面量**中出现的非 ASCII、非中日韩文字符号。
-    ///
-    /// 只认字面量：注释和文档里的箭头、制表符不是界面会渲染的内容，
-    /// 把它们算进来会让这个检查长期处于「必须改注释才能变绿」的状态。
-    fn collect_symbols(symbols: &mut BTreeSet<char>, dir: &std::path::Path) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_symbols(symbols, &path);
-                continue;
-            }
-            if path.extension().is_none_or(|ext| ext != "rs") {
-                continue;
-            }
-            let Ok(source) = fs::read_to_string(&path) else {
-                continue;
-            };
-            symbols.extend(literal_symbols(&source));
-        }
-    }
-
-    /// 提取字符串字面量里的非常规符号。
-    ///
-    /// 只做够用即止的识别：跳过 `//` 行注释、按反斜杠跳过转义字符。
-    /// 不处理块注释与 `r#"..."#` 原始字符串 —— 这两类里出现的符号只会是文档
-    /// 示例，不是界面文本，漏掉不影响这个检查的目的。
-    fn literal_symbols(source: &str) -> Vec<char> {
-        let mut out = Vec::new();
-        let mut chars = source.chars().peekable();
-        while let Some(c) = chars.next() {
-            match c {
-                // 行注释：跳到行尾，注释内容不参与字形检查。
-                '/' if chars.peek() == Some(&'/') => {
-                    for c in chars.by_ref() {
-                        if c == '\n' {
-                            break;
-                        }
-                    }
-                }
-                '"' => {
-                    while let Some(inner) = chars.next() {
-                        match inner {
-                            '\\' => {
-                                // 跳过被转义的下一个字符。
-                                chars.next();
-                            }
-                            '"' => break,
-                            c if !c.is_ascii() && !is_cjk(c) && !c.is_whitespace() => out.push(c),
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        out
-    }
 
     #[test]
-    fn scanner_ignores_comments_but_keeps_literals() {
-        // 用有字形的符号做夹具：这个测试要验证的是「注释被跳过」，
-        // 而不是引入新的缺字形字符把上面那个测试弄红。
-        let source = "// 注释里的 — 不算
-/// 文档里的 · 也不算
-const S: &str = \"字面量 —\";\n";
-        let mut found = literal_symbols(source);
-        found.sort_unstable();
-        found.dedup();
-        assert_eq!(found, vec!['—'], "只应收集字面量里的符号：{found:?}");
-    }
-
-    #[test]
-    fn every_symbol_used_in_the_ui_has_a_glyph() {
-        assert!(
-            find_cjk_font().is_some(),
-            "本机缺少中文字体，无法验证界面字形覆盖"
+    fn first_family_skips_empty_duplicates() {
+        assert_eq!(
+            first_family("Noto Sans CJK SC,Noto Sans CJK SC\n").as_deref(),
+            Some("Noto Sans CJK SC")
         );
-        let ctx = egui::Context::default();
-        configure_fonts(&ctx);
-        let mut output = ctx.run_ui(egui::RawInput::default(), |_ui| {});
-        output.textures_delta.clear();
-
-        let mut symbols = BTreeSet::new();
-        collect_symbols(
-            &mut symbols,
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        );
-
-        let missing: Vec<String> = ctx.fonts_mut(|fonts| {
-            let font_id = FontId::proportional(15.0);
-            symbols
-                .iter()
-                .filter(|c| !fonts.has_glyph(&font_id, **c))
-                .map(|c| format!("{c} (U+{:04X})", *c as u32))
-                .collect()
-        });
-        assert!(
-            missing.is_empty(),
-            "这些字符在界面字体里没有字形，会显示成方块：{missing:?}"
+        assert_eq!(first_family("\n"), None);
+        assert_eq!(
+            first_family(" , WQY Micro Hei\n").as_deref(),
+            Some("WQY Micro Hei")
         );
     }
 }

@@ -5,7 +5,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use crate::model::DesktopEntry;
+use crate::model::{DesktopEntry, MenuEntryState};
 use crate::util::command_exists;
 
 /// 读取并解析一个桌面条目文件；不合法或不应显示时返回 `None`。
@@ -59,6 +59,7 @@ pub fn parse_desktop_str(content: &str, path: &Path) -> Option<DesktopEntry> {
         exec,
         icon: values.get("Icon").cloned().unwrap_or_default(),
         terminal: is_true(values.get("Terminal")),
+        menu_state: MenuEntryState::Visible,
     })
 }
 

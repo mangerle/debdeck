@@ -10,6 +10,7 @@
 pub mod entry;
 pub mod icon;
 pub mod launch;
+pub mod menu;
 
 pub use entry::parse_desktop_file;
 pub use icon::resolve_icon_path;

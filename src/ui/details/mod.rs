@@ -1,256 +1,435 @@
 //! 右侧详情页：头部、操作按钮、标签页。
 //!
 //! 拆成 [`info`]（元数据）与 [`files`]（文件清单）两个子模块，本页只负责
-//! 「取数据 + 布局 + 收集动作」。所有数据都按引用放进 [`Context`]，每帧不再克隆
-//! 文件清单和版本列表。
+//! 「取数据 + 布局 + 收集动作」。所有数据都按引用放进 [`DetailContext`]，绘制时不再
+//! 克隆文件清单和版本列表。
 
 pub mod files;
 pub mod info;
 
-use eframe::egui::{self, Align, Label, Layout, RichText, Ui, Vec2};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _};
+use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::{
+    AnyElement, Context, FontWeight, IntoElement, ParentElement as _, Styled as _, Window, div,
+    img, px,
+};
 
-use crate::app::IconCache;
-use crate::app::{Action, DetailTab};
-use crate::app::{Catalog, ListView};
-use crate::model::{AppEntry, DesktopEntry, InstalledPackage, RepoPackage};
+use crate::app::{Action, Catalog, DebDeckApp, DetailTab, IconCache, ListView};
+use crate::model::{AppEntry, DesktopEntry, InstalledPackage, MenuEntryState};
 use crate::ui::entry_status;
 use crate::ui::icons::{draw_letter_icon, load_icon_texture};
-use crate::util::AppPaths;
 
 /// 一次绘制所需、已经从各处取好的数据。
-pub(crate) struct Context<'a> {
+pub(crate) struct DetailContext<'a> {
     pub(crate) entry: AppEntry,
     pub(crate) installed: Option<&'a InstalledPackage>,
     /// 软件源里该包的全部候选版本（降序，由 `RepositoryData` 保证）。
-    pub(crate) available: &'a [RepoPackage],
+    pub(crate) available: &'a [crate::model::RepoPackage],
     pub(crate) desktop: Option<&'a DesktopEntry>,
 }
 
-/// 绘制详情页，返回用户触发的动作。
+/// 绘制详情页。
 pub(crate) fn show(
-    list: &mut ListView,
-    catalog: &Catalog,
-    icons: &mut IconCache,
-    paths: &AppPaths,
-    ui: &mut Ui,
-) -> Vec<Action> {
-    let Some(entry) = list.selected_entry(catalog).cloned() else {
-        show_placeholder(ui);
-        return Vec::new();
+    app: &mut DebDeckApp,
+    _window: &mut Window,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let Some(entry) = app.list.selected_entry(&app.catalog).cloned() else {
+        return placeholder(cx);
     };
 
-    let installed = catalog.installed_package(&entry.pkg);
-    let context = Context {
-        desktop: installed.and_then(|package| package.desktop.as_ref()),
-        available: catalog.versions(&entry.pkg),
+    let installed = app.catalog.installed_package(&entry.pkg);
+    let available = app.catalog.versions(&entry.pkg);
+    let desktop = installed.and_then(|package| package.desktop.as_ref());
+    let context = DetailContext {
         entry,
         installed,
+        available,
+        desktop,
     };
 
-    show_header(icons, &context, ui);
-    let mut actions = show_actions(catalog, paths, &context, ui);
-    show_tabs(list, &context, ui);
+    let header = show_header(&mut app.icons, &context, cx);
+    let actions = show_actions(&app.catalog, &app.paths, &context, cx);
+    let tab = app.list.detail_tab;
+    let tabs = show_tabs(&app.list, &context, cx);
+    let body = match tab {
+        DetailTab::Info => info::show(&context, cx),
+        DetailTab::Files => {
+            files::show(&context, &app.files, app.files_total, &app.files_input, cx)
+        }
+    };
 
-    match list.detail_tab {
-        DetailTab::Info => actions.extend(info::show(&context, ui)),
-        DetailTab::Files => files::show(list, &context, ui),
-    }
-    actions
+    v_flex()
+        .size_full()
+        .min_w(px(0.0))
+        .px(px(14.0))
+        .py(px(8.0))
+        .child(header)
+        .child(actions)
+        .child(tabs)
+        .child(v_flex().flex_1().min_h(px(0.0)).pt(px(8.0)).child(body))
+        .into_any_element()
 }
 
-fn show_placeholder(ui: &mut Ui) {
-    ui.add_space(80.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            RichText::new("请选择一个应用查看详情")
-                .size(16.0)
-                .color(ui.visuals().weak_text_color()),
-        );
-    });
+fn placeholder(cx: &mut Context<DebDeckApp>) -> AnyElement {
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .text_lg()
+                .text_color(cx.theme().muted_foreground)
+                .child("请选择一个应用查看详情"),
+        )
+        .into_any_element()
 }
 
 /// 图标 + 名称 + 状态徽标。
-fn show_header(icons: &mut IconCache, context: &Context, ui: &mut Ui) {
+fn show_header(
+    icons: &mut IconCache,
+    context: &DetailContext,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
     let entry = &context.entry;
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        let texture = context
-            .desktop
-            .and_then(|desktop| load_icon_texture(icons, ui.ctx(), &desktop.icon));
-        match texture {
-            Some(texture) => {
-                ui.add(egui::Image::new(&texture).fit_to_exact_size(Vec2::splat(48.0)));
-            }
-            None => draw_letter_icon(ui, &entry.display_name),
-        }
-        ui.add_space(4.0);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(&entry.display_name).size(21.0).strong());
-            ui.label(
-                RichText::new(&entry.pkg)
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
-            );
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (status, color) = entry_status(ui, entry);
-            ui.colored_label(color, RichText::new(status).small().strong());
-        });
-    });
+    let muted = cx.theme().muted_foreground;
+    let (status, color) = entry_status(cx.theme(), entry);
+
+    let icon = match context
+        .desktop
+        .and_then(|desktop| load_icon_texture(icons, &desktop.icon))
+    {
+        Some(texture) => img(texture).w(px(48.0)).h(px(48.0)).into_any_element(),
+        None => draw_letter_icon(&entry.display_name, cx.theme()).into_any_element(),
+    };
+
+    h_flex()
+        .items_center()
+        .gap(px(12.0))
+        .pt(px(10.0))
+        .child(icon)
+        .child(
+            v_flex()
+                .min_w(px(0.0))
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .truncate()
+                        .child(entry.display_name.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .truncate()
+                        .child(entry.pkg.clone()),
+                ),
+        )
+        .child(div().flex_1())
+        .child(
+            div()
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(999.0))
+                .bg(color.opacity(0.14))
+                .text_color(color)
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(status),
+        )
+        .into_any_element()
 }
 
-/// 操作按钮行。
-///
-/// 每个「不能点」都要给出原因：按钮灰掉却不说为什么，用户只会反复点。
+/// 操作按钮行。每个「不能点」都要给出原因。
+#[allow(clippy::too_many_lines)]
 fn show_actions(
     catalog: &Catalog,
-    paths: &AppPaths,
-    context: &Context,
-    ui: &mut Ui,
-) -> Vec<Action> {
+    paths: &crate::util::AppPaths,
+    context: &DetailContext,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
     let entry = &context.entry;
     let installed = context.installed.is_some();
-    let mut actions = Vec::new();
+    let has_desktop = context.desktop.is_some();
+    let downloadable = context
+        .available
+        .iter()
+        .any(|package| package.download_url().is_some());
+    let repository_loading = catalog.repository_loading();
 
-    ui.add_space(10.0);
-    ui.horizontal_wrapped(|ui| {
-        // 「打开」要求既有安装记录又有桌面条目：CLI 工具没有可启动的入口。
-        let open = ui
-            .add_enabled(
-                installed && context.desktop.is_some(),
-                egui::Button::new("打开"),
-            )
-            .on_disabled_hover_text(if installed {
-                "该软件包没有可用的桌面启动项"
-            } else {
-                "应用尚未安装"
-            });
-        if open.clicked()
-            && let Some(desktop) = context.desktop.cloned()
-        {
-            actions.push(Action::Open {
-                desktop,
-                name: entry.display_name.clone(),
-            });
-        }
+    let open_desktop = context.desktop.cloned();
+    let open_name = entry.display_name.clone();
+    let open_tooltip = if !installed {
+        "应用尚未安装"
+    } else if !has_desktop {
+        "该软件包没有可用的桌面启动项"
+    } else {
+        "启动应用"
+    };
+    let open = Button::new("open-app")
+        .label("打开")
+        .secondary()
+        .disabled(!(installed && has_desktop))
+        .tooltip(open_tooltip)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if let Some(desktop) = open_desktop.clone() {
+                this.handle_action(
+                    Action::Open {
+                        desktop,
+                        name: open_name.clone(),
+                    },
+                    cx,
+                );
+            }
+        }));
 
-        let uninstall = ui
-            .add_enabled(installed, egui::Button::new("卸载"))
-            .on_disabled_hover_text("应用尚未安装");
-        if uninstall.clicked() {
-            actions.push(Action::Uninstall {
-                pkg: entry.pkg.clone(),
-                name: entry.display_name.clone(),
-            });
-        }
-
-        let hold_label = if entry.is_held {
-            "取消保持版本"
+    let pkg = entry.pkg.clone();
+    let name = entry.display_name.clone();
+    let uninstall = Button::new("uninstall-app")
+        .label("卸载")
+        .secondary()
+        .disabled(!installed)
+        .tooltip(if installed {
+            "卸载应用"
         } else {
-            "保持版本"
-        };
-        let hold = ui
-            .add_enabled(installed, egui::Button::new(hold_label))
-            .on_disabled_hover_text("应用尚未安装");
-        if hold.clicked() {
-            actions.push(Action::ToggleHold {
-                pkg: entry.pkg.clone(),
-                name: entry.display_name.clone(),
-                held: entry.is_held,
-            });
-        }
+            "应用尚未安装"
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.handle_action(
+                Action::Uninstall {
+                    pkg: pkg.clone(),
+                    name: name.clone(),
+                },
+                cx,
+            );
+        }));
 
-        ui.separator();
+    let pkg = entry.pkg.clone();
+    let name = entry.display_name.clone();
+    let held = entry.is_held;
+    let hold_label = if held {
+        "取消保持版本"
+    } else {
+        "保持版本"
+    };
+    let hold = Button::new("hold-app")
+        .label(hold_label)
+        .secondary()
+        .disabled(!installed)
+        .tooltip(if installed {
+            hold_label
+        } else {
+            "应用尚未安装"
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.handle_action(
+                Action::ToggleHold {
+                    pkg: pkg.clone(),
+                    name: name.clone(),
+                    held,
+                },
+                cx,
+            );
+        }));
 
-        let downloadable = context
-            .available
-            .iter()
-            .any(|package| package.download_url().is_some());
-        let download = ui
-            .add_enabled(downloadable, egui::Button::new("在线获取安装包"))
-            .on_disabled_hover_text(if catalog.repository_loading() {
-                "软件源仍在加载中"
-            } else {
-                "软件源中没有该软件包的可下载版本"
-            });
-        if download.clicked() {
-            actions.push(Action::Download {
-                pkg: entry.pkg.clone(),
-                name: entry.display_name.clone(),
-            });
-        }
+    let pkg = entry.pkg.clone();
+    let name = entry.display_name.clone();
+    let download_tooltip = if downloadable {
+        "选择版本并下载安装包"
+    } else if repository_loading {
+        "软件源仍在加载中"
+    } else {
+        "软件源中没有该软件包的可下载版本"
+    };
+    let download = Button::new("download-app")
+        .label("在线获取安装包")
+        .secondary()
+        .disabled(!downloadable)
+        .tooltip(download_tooltip)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.handle_action(
+                Action::Download {
+                    pkg: pkg.clone(),
+                    name: name.clone(),
+                },
+                cx,
+            );
+        }));
 
-        let build = ui
-            .add_enabled(installed, egui::Button::new("离线提取安装包"))
-            .on_disabled_hover_text("应用尚未安装");
-        if build.clicked() {
-            actions.push(Action::Build {
-                pkg: entry.pkg.clone(),
-                name: entry.display_name.clone(),
-            });
-        }
+    let pkg = entry.pkg.clone();
+    let name = entry.display_name.clone();
+    let build = Button::new("build-app")
+        .label("离线提取安装包")
+        .secondary()
+        .disabled(!installed)
+        .tooltip(if installed {
+            "从已安装文件重新打包"
+        } else {
+            "应用尚未安装"
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.handle_action(
+                Action::Build {
+                    pkg: pkg.clone(),
+                    name: name.clone(),
+                },
+                cx,
+            );
+        }));
 
-        if ui
-            .small_button("下载目录")
-            .on_hover_text(paths.downloads.display().to_string())
-            .clicked()
-        {
-            actions.push(Action::OpenDownloads);
+    let desktop_path = context.desktop.map(|desktop| desktop.path.clone());
+    let menu_state = context.desktop.map(|desktop| desktop.menu_state);
+    let menu_toggle = match (desktop_path, menu_state) {
+        (Some(path), Some(state)) => {
+            let (label, tooltip, hidden, enabled) = match state {
+                MenuEntryState::Visible => (
+                    "在应用菜单中隐藏",
+                    "从当前用户的应用菜单隐藏此启动项；同一软件包的其他 .desktop 条目不受影响",
+                    true,
+                    true,
+                ),
+                MenuEntryState::Hidden => {
+                    ("在应用菜单中显示", "恢复此启动项到应用菜单", false, true)
+                }
+                MenuEntryState::ManagedByOther => (
+                    "菜单项由用户自定义",
+                    "已存在用户级 .desktop 覆盖文件，DebDeck 不会修改它",
+                    false,
+                    false,
+                ),
+            };
+            let pkg = entry.pkg.clone();
+            let name = entry.display_name.clone();
+            Some(
+                Button::new("toggle-menu-visibility")
+                    .label(label)
+                    .secondary()
+                    .disabled(!enabled)
+                    .tooltip(tooltip)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if enabled {
+                            this.handle_action(
+                                Action::SetMenuVisibility {
+                                    pkg: pkg.clone(),
+                                    name: name.clone(),
+                                    path: path.clone(),
+                                    hidden,
+                                },
+                                cx,
+                            );
+                        }
+                    })),
+            )
         }
-    });
-    actions
+        _ => None,
+    };
+
+    let downloads = paths.downloads.clone();
+    let border = cx.theme().border;
+
+    h_flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.0))
+        .py(px(10.0))
+        .child(open)
+        .child(uninstall)
+        .child(hold)
+        .child(div().w(px(1.0)).h(px(20.0)).bg(border))
+        .child(download)
+        .child(build)
+        .children(menu_toggle)
+        .child(
+            Button::new("open-downloads-detail")
+                .label("下载目录")
+                .compact()
+                .ghost()
+                .tooltip(downloads.display().to_string())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.handle_action(Action::OpenDownloads, cx);
+                })),
+        )
+        .into_any_element()
 }
 
 /// 标签页切换条。
-fn show_tabs(list: &mut ListView, context: &Context, ui: &mut Ui) {
-    ui.add_space(8.0);
-    ui.separator();
-    ui.horizontal(|ui| {
-        if ui
-            .selectable_label(list.detail_tab == DetailTab::Info, "信息")
-            .clicked()
-        {
-            list.detail_tab = DetailTab::Info;
-        }
-        let files_label = format!(
-            "文件 ({})",
-            context.installed.map_or(0, |package| package.files.len())
-        );
-        if ui
-            .selectable_label(list.detail_tab == DetailTab::Files, files_label)
-            .clicked()
-        {
-            list.detail_tab = DetailTab::Files;
-        }
-    });
-    ui.add_space(4.0);
+fn show_tabs(list: &ListView, context: &DetailContext, cx: &mut Context<DebDeckApp>) -> AnyElement {
+    let border = cx.theme().border;
+    let files_label = format!(
+        "文件 ({})",
+        context.installed.map_or(0, |package| package.files.len())
+    );
+    let info_selected = list.detail_tab == DetailTab::Info;
+
+    h_flex()
+        .gap(px(4.0))
+        .pb(px(4.0))
+        .border_b_1()
+        .border_color(border)
+        .child(
+            Button::new("tab-info")
+                .label("信息")
+                .compact()
+                .ghost()
+                .selected(info_selected)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.list.detail_tab = DetailTab::Info;
+                    cx.notify();
+                })),
+        )
+        .child(
+            Button::new("tab-files")
+                .label(files_label)
+                .compact()
+                .ghost()
+                .selected(!info_selected)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.list.detail_tab = DetailTab::Files;
+                    cx.notify();
+                })),
+        )
+        .into_any_element()
 }
 
 /// 左侧标签 + 右侧取值的一行。
-pub(crate) fn field_row(ui: &mut Ui, label: &str, value: &str) {
-    ui.horizontal_top(|ui| {
-        field_label(ui, label);
-        ui.add(Label::new(value).wrap());
-    });
-    ui.add_space(4.0);
+pub(crate) fn field_row(label: &str, value: &str, cx: &Context<DebDeckApp>) -> AnyElement {
+    field_with_value(
+        label,
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .text_sm()
+            .whitespace_normal()
+            .child(value.to_string())
+            .into_any_element(),
+        cx,
+    )
 }
 
 /// 与 [`field_row`] 同布局，但允许调用方自己画右侧的内容（链接、按钮等）。
-pub(crate) fn field_with_value(ui: &mut Ui, label: &str, draw: impl FnOnce(&mut Ui)) {
-    ui.horizontal_top(|ui| {
-        field_label(ui, label);
-        draw(ui);
-    });
-    ui.add_space(4.0);
-}
-
-/// 定宽的字段标签，让所有取值左对齐。
-fn field_label(ui: &mut Ui, label: &str) {
-    ui.add_sized(
-        [88.0, 20.0],
-        Label::new(RichText::new(label).color(ui.visuals().weak_text_color())),
-    );
+pub(crate) fn field_with_value(
+    label: &str,
+    child: AnyElement,
+    cx: &Context<DebDeckApp>,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .items_start()
+        .gap(px(8.0))
+        .py(px(2.0))
+        .child(
+            div()
+                .w(px(88.0))
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(muted)
+                .child(label.to_string()),
+        )
+        .child(div().flex_1().min_w(px(0.0)).child(child))
+        .into_any_element()
 }
 
 /// 按字符数截断，超出用省略号；避免长 URL 撑破布局。

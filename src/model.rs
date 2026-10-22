@@ -154,7 +154,18 @@ impl RepoPackage {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+/// 桌面菜单项的当前可见性。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuEntryState {
+    /// 菜单里正常显示，且没有用户级覆盖文件。
+    Visible,
+    /// DebDeck 写入的用户级覆盖文件正在隐藏它。
+    Hidden,
+    /// 已存在用户级覆盖文件，但不是 DebDeck 写的；不自动修改。
+    ManagedByOther,
+}
+
+#[derive(Clone, Debug)]
 pub struct DesktopEntry {
     pub path: std::path::PathBuf,
     pub name: String,
@@ -162,6 +173,7 @@ pub struct DesktopEntry {
     pub exec: String,
     pub icon: String,
     pub terminal: bool,
+    pub menu_state: MenuEntryState,
 }
 
 /// 一个已安装软件包的完整视图。
@@ -251,7 +263,6 @@ pub struct AppEntry {
     pub has_update: bool,
     pub installed_size_kb: u64,
     pub updated: Option<SystemTime>,
-    pub version: String,
     pub latest_version: Option<String>,
     pub search_text: String,
     pub sort_name: String,
@@ -301,10 +312,6 @@ pub fn build_entries(
             .map(|metadata| metadata.installed_size_kb)
             .or_else(|| latest.map(|metadata| metadata.installed_size_kb))
             .unwrap_or(0);
-        let version = installed_meta
-            .map(|metadata| metadata.version.clone())
-            .or_else(|| latest.map(|metadata| metadata.version.clone()))
-            .unwrap_or_default();
         entries.push(AppEntry {
             pkg: name,
             display_name,
@@ -314,7 +321,6 @@ pub fn build_entries(
             has_update,
             installed_size_kb,
             updated: installed_pkg.and_then(|pkg| pkg.updated),
-            version,
             latest_version: latest.map(|metadata| metadata.version.clone()),
             search_text,
             sort_name,
@@ -374,7 +380,6 @@ mod tests {
         let hello = entries.iter().find(|entry| entry.pkg == "hello").unwrap();
         assert!(hello.is_installed);
         assert!(hello.has_update);
-        assert_eq!(hello.version, "1.0");
         let world = entries.iter().find(|entry| entry.pkg == "world").unwrap();
         assert!(!world.is_installed);
     }

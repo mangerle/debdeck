@@ -1,92 +1,96 @@
 //! 顶栏：标题、搜索、筛选、刷新。
 
-use eframe::egui::{self, Align, Layout, RichText, TextEdit, Ui};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::input::Input;
+use gpui_kit::component::select::Select;
+use gpui_kit::component::{ActiveTheme as _, h_flex};
+use gpui_kit::component::{Disableable as _, Selectable as _};
+use gpui_kit::*;
 
-use crate::app::ListView;
-use crate::app::{Action, Filter};
-use crate::util::APP_NAME;
+use crate::app::{Action, DebDeckApp, Filter, refresh_allowed};
 
 /// 绘制顶栏。
 ///
-/// `refresh_allowed` 由调用方按 [`crate::app::refresh_allowed`] 算出，
+/// `refresh_allowed` 由调用方按 [`refresh_allowed`] 算出，
 /// 于是「按钮禁用」与「按了也不执行」用的是同一个判断。
-pub(crate) fn show(list: &mut ListView, refresh_allowed: bool, ui: &mut Ui) -> Vec<Action> {
-    let mut actions = Vec::new();
+pub(crate) fn show(
+    app: &mut DebDeckApp,
+    _window: &mut Window,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let border = cx.theme().border;
+    let background = cx.theme().background;
 
-    egui::Panel::top("top_toolbar").show(ui, |ui| {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(APP_NAME).size(21.0).strong());
-            ui.label(
-                RichText::new("Ubuntu 应用管理器")
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
-            );
+    let searching = !app.list.search.is_empty();
+    let allowed = refresh_allowed(&app.catalog, &app.dialogs);
+    let filter = app.list.filter;
 
-            // 右侧控件从右往左排：刷新、筛选、清除、搜索框。
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                actions.extend(draw_refresh_button(refresh_allowed, ui));
-                draw_filter(list, ui);
-                draw_clear_button(list, ui);
-                draw_search_box(list, ui);
-            });
-        });
-        ui.add_space(6.0);
-    });
+    let filter_control = if searching {
+        div()
+            .text_sm()
+            .text_color(muted)
+            .child("搜索全部应用")
+            .into_any_element()
+    } else {
+        h_flex()
+            .gap(px(2.0))
+            .children(
+                Filter::ALL
+                    .iter()
+                    .copied()
+                    .map(|value| filter_button(value, filter, cx).into_any_element()),
+            )
+            .into_any_element()
+    };
 
-    if refresh_allowed && keyboard_refresh_requested(ui) {
-        actions.push(Action::Refresh);
-    }
-    actions
+    // 筛选区固定宽度：搜索时只替换内容，不让整组控件收缩。
+    let filter_slot = div().w(px(356.0)).flex_shrink_0().child(filter_control);
+    // Select 内部是 size_full()，必须由外层容器约束宽度；直接给它 .w()
+    // 会被内部的 size_full 吃掉，表现为排序框扩张、刷新被挤到右侧。
+    let sort_control = div()
+        .w(px(128.0))
+        .flex_shrink_0()
+        .child(Select::new(&app.sort_select).menu_width(px(160.0)));
+
+    let search_and_actions = h_flex()
+        .gap(px(8.0))
+        .items_center()
+        .child(Input::new(&app.search_input).w(px(380.0)).cleanable(true))
+        .child(sort_control)
+        .child(
+            Button::new("refresh")
+                .label("刷新")
+                .compact()
+                .disabled(!allowed)
+                .tooltip("重新读取已安装应用和 APT 软件源（F5）")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.handle_action(Action::Refresh, cx);
+                })),
+        );
+
+    h_flex()
+        .h(px(56.0))
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(14.0))
+        .border_b_1()
+        .border_color(border)
+        .bg(background)
+        .child(search_and_actions)
+        .child(div().flex_1())
+        .child(filter_slot)
+        .into_any_element()
 }
 
-fn draw_refresh_button(refresh_allowed: bool, ui: &mut Ui) -> Option<Action> {
-    let refresh = ui
-        .add_enabled(refresh_allowed, egui::Button::new("刷新"))
-        .on_hover_text("重新读取已安装应用和 APT 软件源（F5）");
-    refresh.clicked().then_some(Action::Refresh)
-}
-
-/// 有搜索词时筛选下拉不起作用，直接禁用，避免用户以为切换生效了。
-fn draw_filter(list: &mut ListView, ui: &mut Ui) {
-    let searching = !list.search.is_empty();
-    ui.add_enabled_ui(!searching, |ui| {
-        egui::ComboBox::from_id_salt("filter_combo")
-            .width(132.0)
-            .selected_text(if searching {
-                "搜索全部应用"
-            } else {
-                list.filter.label()
-            })
-            .show_ui(ui, |ui| {
-                for filter in Filter::ALL {
-                    if ui
-                        .selectable_label(list.filter == filter, filter.label())
-                        .clicked()
-                    {
-                        list.filter = filter;
-                    }
-                }
-            });
-    });
-}
-
-fn draw_clear_button(list: &mut ListView, ui: &mut Ui) {
-    if !list.search.is_empty() && ui.small_button("清除").on_hover_text("清空搜索").clicked()
-    {
-        list.search.clear();
-    }
-}
-
-fn draw_search_box(list: &mut ListView, ui: &mut Ui) {
-    ui.add(
-        TextEdit::singleline(&mut list.search)
-            .hint_text("搜索应用名、包名或拼音")
-            .desired_width(300.0),
-    );
-}
-
-/// F5 刷新。与按钮共用同一个可用性判断（由调用方传入）。
-fn keyboard_refresh_requested(ui: &Ui) -> bool {
-    ui.input(|input| input.key_pressed(egui::Key::F5))
+fn filter_button(value: Filter, current: Filter, cx: &mut Context<DebDeckApp>) -> Button {
+    Button::new(value.label())
+        .label(value.label())
+        .compact()
+        .selected(value == current)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.list.filter = value;
+            cx.notify();
+        }))
 }

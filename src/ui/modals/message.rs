@@ -1,39 +1,43 @@
 //! 纯文本提示框：把不适合塞进按钮提示的长信息展示出来。
 
-use eframe::egui::{self, Align, Id, Label, Layout, ScrollArea, Ui};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::v_flex;
+use gpui_kit::*;
 
-use crate::app::ModalState;
+use crate::app::DebDeckApp;
+
+use super::{actions, body, overlay, title};
 
 /// 错误与警告文本可能很长，限制高度并允许滚动。
 const MAX_BODY_HEIGHT: f32 = 320.0;
 
-/// 绘制消息框；只有关闭一条出路，因此不需要交回任何动作。
-pub(crate) fn show(ctx: &egui::Context, title: &str, message: &str) -> Option<ModalState> {
-    let mut close = false;
-    let response = egui::Modal::new(Id::unique("message_modal")).show(ctx, |ui: &mut Ui| {
-        ui.set_min_width(460.0);
-        ui.heading(title);
-        ui.add_space(8.0);
-        ScrollArea::vertical()
-            .id_salt("message_scroll")
-            .max_height(MAX_BODY_HEIGHT)
-            .show(ui, |ui| {
-                ui.add(Label::new(message).wrap());
-            });
-        ui.add_space(16.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.button("关闭").clicked() {
-                close = true;
-            }
-        });
-    });
+/// 绘制消息框；只有关闭一条出路。
+pub(crate) fn show(
+    _app: &mut DebDeckApp,
+    title_text: &str,
+    message: &str,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let close = Button::new("close-message")
+        .label("关闭")
+        .primary()
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.dialogs.modal = None;
+            cx.notify();
+        }));
 
-    if close || response.should_close() {
-        None
-    } else {
-        Some(ModalState::Message {
-            title: title.to_string(),
-            message: message.to_string(),
-        })
-    }
+    let card = v_flex()
+        .gap(px(12.0))
+        .child(title(title_text.to_string()))
+        .child(
+            div()
+                .id("message-body")
+                .max_h(px(MAX_BODY_HEIGHT))
+                .overflow_y_scroll()
+                .child(body(message.to_string())),
+        )
+        .child(actions().child(close))
+        .into_any_element();
+
+    overlay(card, true, cx)
 }

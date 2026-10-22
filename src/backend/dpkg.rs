@@ -119,9 +119,11 @@ fn find_desktop_entry(pkg_name: &str, files: &[String]) -> Option<crate::model::
         .filter(|path| is_application_desktop(path, pkg_name))
         .collect();
     candidates.sort();
-    candidates
-        .iter()
-        .find_map(|path| parse_desktop_file(Path::new(path)))
+    candidates.iter().find_map(|path| {
+        let mut entry = parse_desktop_file(Path::new(path))?;
+        entry.menu_state = crate::backend::desktop::menu::menu_state(&entry.path);
+        Some(entry)
+    })
 }
 
 /// `status` 文件的修改时间，供 dpkg 变化监视轮询使用。

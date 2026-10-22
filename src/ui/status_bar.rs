@@ -1,111 +1,138 @@
 //! 状态栏：统计、软件源状态与快捷入口。
 
-use eframe::egui::{self, Align, Layout, RichText, Ui};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::h_flex;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _};
+use gpui_kit::*;
 
-use crate::app::Action;
-use crate::app::{Catalog, Dialogs};
-use crate::util::AppPaths;
+use crate::app::{Action, DebDeckApp, refresh_allowed};
 
 /// 绘制状态栏。
-///
-/// `visible_count` 由调用方在算完可见行之后传入 —— 状态栏因此不需要认识列表状态。
 pub(crate) fn show(
-    catalog: &Catalog,
-    dialogs: &mut Dialogs,
-    paths: &AppPaths,
-    visible_count: usize,
-    refresh_allowed: bool,
-    ui: &mut Ui,
-) -> Vec<Action> {
-    let mut actions = Vec::new();
-    let counts = catalog.counts();
-    let warnings: Vec<String> = catalog.repository_warnings().to_vec();
+    app: &mut DebDeckApp,
+    _window: &mut Window,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let counts = app.catalog.counts();
+    let visible = app.list.visible().len();
+    let warnings = app.catalog.repository_warnings().to_vec();
+    let degraded = app.catalog.upgradable_degraded();
+    let loading = app.catalog.repository_loading();
+    let has_packages = app.catalog.has_packages();
+    let allowed = refresh_allowed(&app.catalog, &app.dialogs);
+    let downloads = app.paths.downloads.clone();
 
-    egui::Panel::bottom("status_bar").show(ui, |ui| {
-        ui.add_space(3.0);
-        ui.horizontal(|ui| {
-            ui.label(format!(
-                "共 {} 个应用 · 已安装 {} 个 · 界面应用 {} 个 · 保持版本 {} 个 · 可更新 {} 个 · 显示 {visible_count} 个",
-                counts.total, counts.installed, counts.gui, counts.held, counts.upgradable,
-            ));
+    let muted = cx.theme().muted_foreground;
+    let border = cx.theme().border;
+    let background = cx.theme().status_bar;
 
-            // 降级判定要说出来：否则「可更新 0 个」会被读成「都已经最新」。
-            if catalog.upgradable_degraded() {
-                ui.label(
-                    RichText::new("更新状态未确认（apt 查询失败，按版本号比较推断）")
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
-                );
-            }
+    let stats = div()
+        .text_xs()
+        .text_color(muted)
+        .truncate()
+        .child(format!(
+            "共 {} 个应用 · 已安装 {} 个 · 界面应用 {} 个 · 保持版本 {} 个 · 可更新 {} 个 · 显示 {visible} 个",
+            counts.total, counts.installed, counts.gui, counts.held, counts.upgradable,
+        ));
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .small_button("下载目录")
-                    .on_hover_text(paths.downloads.display().to_string())
-                    .clicked()
-                {
-                    actions.push(Action::OpenDownloads);
-                }
-                if !warnings.is_empty()
-                    && ui
-                        .small_button(format!("软件源警告 {}", warnings.len()))
-                        .on_hover_text("点击查看明细")
-                        .clicked()
-                {
-                    // 只是展示文本，留在本层完成，不必绕一圈动作。
-                    dialogs.set_message("软件源警告", warnings.join("\n"));
-                }
-                actions.extend(draw_repository_status(
-                    catalog,
-                    &warnings,
-                    refresh_allowed,
-                    ui,
-                ));
-            });
-        });
-        ui.add_space(3.0);
-    });
-    actions
+    let right = h_flex()
+        .gap(px(8.0))
+        .items_center()
+        .child(
+            Button::new("open-downloads")
+                .label("下载目录")
+                .compact()
+                .ghost()
+                .tooltip(downloads.display().to_string())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.handle_action(Action::OpenDownloads, cx);
+                })),
+        )
+        .children((!warnings.is_empty()).then(|| {
+            Button::new("repository-warnings")
+                .label(format!("软件源警告 {}", warnings.len()))
+                .compact()
+                .ghost()
+                .tooltip("点击查看明细")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.dialogs.set_message("软件源警告", warnings.join("\n"));
+                    cx.notify();
+                }))
+                .into_any_element()
+        }))
+        .child(repository_status(loading, has_packages, allowed, cx));
+
+    h_flex()
+        .h(px(32.0))
+        .flex_shrink_0()
+        .items_center()
+        .justify_between()
+        .px(px(12.0))
+        .gap(px(12.0))
+        .border_t_1()
+        .border_color(border)
+        .bg(background)
+        .child(
+            h_flex()
+                .gap(px(10.0))
+                .items_center()
+                .min_w_0()
+                .child(stats)
+                .children(degraded.then(|| {
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .truncate()
+                        .child("更新状态未确认（apt 查询失败，按版本号比较推断）")
+                        .into_any_element()
+                })),
+        )
+        .child(right)
+        .into_any_element()
 }
 
-/// 右侧的软件源状态。
-///
-/// 索引为空时不写「已加载」——那是误导，改成可点击的重试入口。
-fn draw_repository_status(
-    catalog: &Catalog,
-    warnings: &[String],
-    refresh_allowed: bool,
-    ui: &mut Ui,
-) -> Option<Action> {
-    if catalog.repository_loading() {
-        ui.spinner();
-        ui.label(
-            RichText::new("正在加载软件源…")
-                .small()
-                .color(ui.visuals().weak_text_color()),
-        );
-        return None;
+/// 右侧的软件源状态。索引为空时不写「已加载」——那是误导，改成可点击的重试入口。
+fn repository_status(
+    loading: bool,
+    has_packages: bool,
+    allowed: bool,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    if loading {
+        return h_flex()
+            .gap(px(6.0))
+            .items_center()
+            .child(Spinner::new().small())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("正在加载软件源…"),
+            )
+            .into_any_element();
     }
 
-    if !catalog.has_packages() {
-        let label = if refresh_allowed {
+    if !has_packages {
+        let label = if allowed {
             "软件源不可用，点此重试"
         } else {
             "软件源不可用"
         };
-        let hint = warnings
-            .first()
-            .map_or("尚未读取软件源索引", String::as_str);
-        if ui.small_button(label).on_hover_text(hint).clicked() && refresh_allowed {
-            return Some(Action::Refresh);
-        }
-        return None;
+        return Button::new("repository-retry")
+            .label(label)
+            .compact()
+            .ghost()
+            .disabled(!allowed)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.handle_action(Action::Refresh, cx);
+            }))
+            .into_any_element();
     }
 
-    ui.label(
-        RichText::new("软件源已加载")
-            .small()
-            .color(ui.visuals().weak_text_color()),
-    );
-    None
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child("软件源已加载")
+        .into_any_element()
 }

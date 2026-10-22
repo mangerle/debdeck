@@ -122,16 +122,6 @@ impl ListView {
     pub(crate) fn selected_entry<'a>(&self, catalog: &'a Catalog) -> Option<&'a AppEntry> {
         self.selected.as_deref().and_then(|pkg| catalog.entry(pkg))
     }
-
-    /// 点击表头：同一列切换方向，不同列改用升序。
-    pub(crate) fn apply_sort_click(&mut self, key: SortKey) {
-        if self.sort == key {
-            self.ascending = !self.ascending;
-        } else {
-            self.sort = key;
-            self.ascending = true;
-        }
-    }
 }
 
 /// 某个包是否仍在可见行里。
@@ -203,7 +193,6 @@ mod tests {
             has_update: false,
             installed_size_kb: size,
             updated: None,
-            version: "1".to_string(),
             latest_version: None,
             search_text: pkg.to_string(),
             sort_name: pkg.to_string(),

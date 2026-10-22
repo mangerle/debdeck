@@ -8,19 +8,19 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::app::state::{
-    Action, Confirm, DebDeckApp, DownloadDialog, ModalOutcome, ModalState, Operation,
-};
+use gpui_kit::{ClipboardItem, Context};
+
+use crate::app::state::{Action, Confirm, DebDeckApp, DownloadDialog, ModalState, Operation};
 use crate::backend::desktop::launch_desktop;
 use crate::backend::shell;
 use crate::model::RepoPackage;
 use crate::runtime::{DownloadRequest, report};
 
 impl DebDeckApp {
-    pub(crate) fn handle_action(&mut self, action: Action) {
+    pub(crate) fn handle_action(&mut self, action: Action, cx: &mut Context<Self>) {
         match action {
             Action::Open { desktop, name } => match launch_desktop(&desktop) {
-                Ok(()) => self.dialogs.set_toast(format!("正在打开 {name}")),
+                Ok(()) => self.set_toast(format!("正在打开 {name}"), cx),
                 Err(error) => self.dialogs.set_message("无法打开应用", report(&error)),
             },
             Action::OpenDownloads => {
@@ -28,8 +28,8 @@ impl DebDeckApp {
                 self.open_directory(&path);
             }
             Action::Copy(text) => {
-                self.ctx.copy_text(text);
-                self.dialogs.set_toast("已复制到剪贴板");
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.set_toast("已复制到剪贴板", cx);
             }
             Action::Uninstall { pkg, name } => {
                 self.dialogs.modal = Some(ModalState::Confirm(Confirm::Uninstall { pkg, name }));
@@ -44,13 +44,33 @@ impl DebDeckApp {
             Action::Build { pkg, name } => {
                 self.dialogs.modal = Some(ModalState::Confirm(Confirm::Build { pkg, name }));
             }
+            Action::SetMenuVisibility {
+                pkg,
+                name,
+                path,
+                hidden,
+            } => match crate::backend::desktop::menu::set_hidden(&path, hidden) {
+                Ok(state) => {
+                    self.catalog.set_desktop_menu_state(&pkg, state);
+                    let message = if hidden {
+                        format!("已隐藏「{name}」的应用菜单项（菜单刷新可能需要几秒）")
+                    } else {
+                        format!("已恢复「{name}」的应用菜单项")
+                    };
+                    self.set_toast(message, cx);
+                }
+                Err(error) => self
+                    .dialogs
+                    .set_message("无法修改应用菜单项", report(&error)),
+            },
             Action::Download { pkg, name } => self.open_download_dialog(pkg, name),
             Action::Refresh => self.refresh_all(),
         }
+        cx.notify();
     }
 
     /// 在文件管理器里打开目录；失败时给出可操作的提示。
-    fn open_directory(&mut self, path: &Path) {
+    pub(crate) fn open_directory(&mut self, path: &Path) {
         if let Err(error) = shell::open_directory(path) {
             self.dialogs
                 .set_message("无法打开目录", format!("{}\n{error:#}", path.display()));
@@ -187,17 +207,6 @@ impl DebDeckApp {
             Confirm::Uninstall { pkg, name } => self.start_uninstall(pkg, &name),
             Confirm::Hold { pkg, name, hold } => self.start_hold(pkg, &name, hold),
             Confirm::Build { pkg, name } => self.start_build(&pkg, &name),
-        }
-    }
-
-    /// 应用模态框交回的结果。
-    pub(crate) fn apply_modal_outcome(&mut self, outcome: ModalOutcome) {
-        match outcome {
-            ModalOutcome::Confirm(confirm) => self.start_confirmed(confirm),
-            ModalOutcome::StartDownload(start) => {
-                self.start_download(&start.name, &start.package, start.destination);
-            }
-            ModalOutcome::OpenDir(path) => self.open_directory(&path),
         }
     }
 }

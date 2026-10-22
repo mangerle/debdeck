@@ -1,61 +1,111 @@
 //! 非模态的反馈：加载页与自动消失的轻提示。
 
-use eframe::egui::{self, Align2, Id, Label, RichText, Ui, Vec2};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::v_flex;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _};
+use gpui_kit::*;
 
-use crate::app::LoadState;
-use crate::ui::{
-    View,
-    theme::{ACCENT, DANGER},
-};
+use crate::app::DebDeckApp;
 use crate::util::APP_NAME;
 
-/// 轻提示：贴在窗口下沿，几秒后自己消失。
-///
-/// 它同时负责清理过期提示，因此调用方不需要额外的计时器。
-pub(crate) fn show_toast(view: &mut View, ui: &mut Ui) {
-    let Some(text) = view.dialogs.toast_text() else {
-        return;
+/// 首屏加载页。失败时显示错误详情与重试按钮 —— 只转圈不报错会让用户
+/// 以为程序卡死。
+pub(crate) fn show_loading(
+    app: &mut DebDeckApp,
+    _window: &mut Window,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+    let load = app.catalog.load();
+
+    let body = if let Some(error) = load.error() {
+        v_flex()
+            .max_w(px(680.0))
+            .items_center()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(danger)
+                    .child("无法读取软件包数据"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .whitespace_normal()
+                    .child(error.to_string()),
+            )
+            .child(
+                Button::new("retry-load")
+                    .label("重试")
+                    .primary()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.retry_initial_load();
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    } else {
+        v_flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(Spinner::new().large())
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(load.stage().to_string()),
+            )
+            .into_any_element()
     };
-    egui::Area::new(Id::unique("toast_area"))
-        .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -48.0))
-        .order(egui::Order::Foreground)
-        .interactable(false)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style())
-                .fill(ui.visuals().extreme_bg_color)
-                .show(ui, |ui| {
-                    ui.colored_label(ACCENT, text);
-                });
-        });
-    // 到点要有人负责让它消失：主动约一次重绘，不依赖鼠标事件。
-    ui.ctx()
-        .request_repaint_after(std::time::Duration::from_millis(500));
+
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap(px(10.0))
+        .child(
+            div()
+                .text_3xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(APP_NAME),
+        )
+        .child(body)
+        .into_any_element()
 }
 
-/// 首屏加载页。返回用户是否按了「重试」。
-///
-/// 加载中显示阶段文字；失败时显示错误详情与重试按钮 —— 只转圈不报错会让用户
-/// 以为程序卡死。
-pub(crate) fn show_loading_panel(ui: &mut Ui, load: &LoadState) -> bool {
-    let mut retry = false;
-    egui::CentralPanel::default().show(ui, |ui| {
-        ui.add_space(140.0);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new(APP_NAME).size(30.0).strong());
-            ui.add_space(8.0);
-            if let Some(error) = load.error() {
-                ui.colored_label(DANGER, "无法读取软件包数据");
-                ui.add_space(8.0);
-                ui.add(Label::new(error).wrap());
-                ui.add_space(10.0);
-                retry = ui.button("重试").clicked();
-            } else {
-                ui.spinner();
-                ui.add_space(8.0);
-                let stage = load.stage();
-                ui.label(RichText::new(stage).color(ui.visuals().weak_text_color()));
-            }
-        });
-    });
-    retry
+/// 轻提示：贴在窗口下沿，几秒后由应用层的定时任务清理。
+pub(crate) fn show_toast(
+    app: &mut DebDeckApp,
+    _window: &mut Window,
+    cx: &mut Context<DebDeckApp>,
+) -> Option<AnyElement> {
+    let text = app.dialogs.toast_text()?;
+    let theme = cx.theme();
+    Some(
+        div()
+            .absolute()
+            .bottom(px(48.0))
+            .left(px(0.0))
+            .right(px(0.0))
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.popover)
+                    .text_sm()
+                    .text_color(theme.primary)
+                    .child(text),
+            )
+            .into_any_element(),
+    )
 }

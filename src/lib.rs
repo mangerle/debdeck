@@ -1,4 +1,4 @@
-//! DebDeck：Ubuntu 的 APT/dpkg 应用管理器（Rust + egui）。
+//! DebDeck：Ubuntu 的 APT/dpkg 应用管理器（Rust + GPUI）。
 //!
 //! # 分层与依赖方向
 //!

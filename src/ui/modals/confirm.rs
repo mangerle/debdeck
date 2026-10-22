@@ -1,10 +1,13 @@
 //! 确认框：不可逆操作前的一次拦阻。
 
-use eframe::egui::{self, Align, Color32, Id, Label, Layout, RichText, Ui};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::v_flex;
+use gpui_kit::*;
 
-use crate::app::{Confirm, ModalOutcome, ModalState};
-use crate::ui::theme::{ACCENT, DANGER};
+use crate::app::{Confirm, DebDeckApp};
 use crate::util::AppPaths;
+
+use super::{actions, body, overlay, title};
 
 /// 确认框的文案。集中成一张表，避免在三处 `match` 里各写一半。
 struct ConfirmCopy {
@@ -56,42 +59,40 @@ fn confirm_copy(confirm: &Confirm, paths: &AppPaths) -> ConfirmCopy {
     }
 }
 
-/// 绘制确认框。留下 `Some` 表示用户还没做选择。
+/// 绘制确认框。
 pub(crate) fn show(
-    ctx: &egui::Context,
-    confirm: Confirm,
-    paths: &AppPaths,
-    outcomes: &mut Vec<ModalOutcome>,
-) -> Option<ModalState> {
-    let text = confirm_copy(&confirm, paths);
-    let mut confirmed = false;
-    let mut cancelled = false;
+    app: &mut DebDeckApp,
+    confirm: &Confirm,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let copy = confirm_copy(confirm, &app.paths);
+    let confirm_value = confirm.clone();
 
-    let response = egui::Modal::new(Id::unique("confirm_modal")).show(ctx, |ui: &mut Ui| {
-        ui.set_min_width(430.0);
-        ui.heading(text.title);
-        ui.add_space(8.0);
-        ui.add(Label::new(text.message).wrap());
-        ui.add_space(16.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let fill = if text.dangerous { DANGER } else { ACCENT };
-            let button = egui::Button::new(RichText::new(text.confirm_label).color(Color32::WHITE))
-                .fill(fill);
-            if ui.add(button).clicked() {
-                confirmed = true;
-            }
-            if ui.button("取消").clicked() {
-                cancelled = true;
-            }
-        });
-    });
+    let mut confirm_button = Button::new("confirm-action").label(copy.confirm_label);
+    confirm_button = if copy.dangerous {
+        confirm_button.danger()
+    } else {
+        confirm_button.primary()
+    };
+    let confirm_button = confirm_button.on_click(cx.listener(move |this, _, _, cx| {
+        this.start_confirmed(confirm_value.clone());
+        cx.notify();
+    }));
 
-    if confirmed {
-        outcomes.push(ModalOutcome::Confirm(confirm));
-        return None;
-    }
-    if cancelled || response.should_close() {
-        return None;
-    }
-    Some(ModalState::Confirm(confirm))
+    let cancel = Button::new("cancel-confirm")
+        .label("取消")
+        .ghost()
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.dialogs.modal = None;
+            cx.notify();
+        }));
+
+    let card = v_flex()
+        .gap(px(12.0))
+        .child(title(copy.title))
+        .child(body(copy.message))
+        .child(actions().child(cancel).child(confirm_button))
+        .into_any_element();
+
+    overlay(card, true, cx)
 }

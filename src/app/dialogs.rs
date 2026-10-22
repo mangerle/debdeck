@@ -42,6 +42,11 @@ impl Dialogs {
         });
     }
 
+    /// 清理提示（定时任务到点或用户关闭时使用）。
+    pub(crate) fn clear_toast(&mut self) {
+        self.toast = None;
+    }
+
     /// 当前提示文本；顺便清理已过期的提示。
     pub(crate) fn toast_text(&mut self) -> Option<String> {
         match &self.toast {
@@ -73,6 +78,16 @@ impl Dialogs {
     /// 用操作对话框替换当前模态。
     pub(crate) fn begin_operation(&mut self, operation: Operation) {
         self.modal = Some(ModalState::Operation(operation));
+    }
+
+    /// 请求取消当前可取消的操作。没有取消句柄（提权命令）时什么也不做。
+    pub(crate) fn request_cancel(&mut self) {
+        if let Some(ModalState::Operation(operation)) = &mut self.modal
+            && let Some(token) = &operation.cancel
+        {
+            token.store(true, std::sync::atomic::Ordering::Relaxed);
+            operation.cancel_requested = true;
+        }
     }
 
     pub(crate) fn take_modal(&mut self) -> Option<ModalState> {

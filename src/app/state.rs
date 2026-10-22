@@ -3,18 +3,21 @@
 //! * [`Catalog`] —— 从系统读到的数据以及由它派生的列表条目，是唯一的「事实」来源；
 //! * [`ListView`] —— 纯视图状态（搜索、筛选、排序、选中），不持有数据；
 //! * [`Dialogs`] —— 同一时刻的模态与提示；
-//! * 其余（`ctx`/`paths`/`tasks`/`rx`/`icons`）是运行环境与资源。
+//! * 其余（`paths`/`tasks`/`rx`/`icons` 与输入框、行快照）是运行环境与绘制资源。
 //!
 //! 拆分的核心动机是 [`ListView::visible`]：它存的是 `Catalog::entries` 的**下标**，
 //! 因此「entries 变了就必须重算 visible」这条不变量必须有人守着。现在它由
 //! [`ListView`] 与 [`Catalog::revision`] 共同保证，而不是靠调用点记得置一个布尔位。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-use eframe::egui;
+use gpui_kit::component::input::InputState;
+use gpui_kit::component::select::{SearchableVec, SelectState};
+use gpui_kit::{Entity, RenderImage, SharedString};
 
-use crate::model::RepoPackage;
+use crate::model::{AppEntry, RepoPackage};
 use crate::runtime::{BackendEvent, CancelToken, OperationId, TaskManager};
 use crate::util::AppPaths;
 
@@ -120,13 +123,6 @@ pub(crate) enum ModalState {
 }
 
 /// 需要用户确认的操作。确认后再投递任务，避免误点。
-/// 下载确认后的载荷。单独装箱，避免与只含包名的 `Confirm` 相差好几个数量级。
-pub(crate) struct DownloadStart {
-    pub(crate) name: String,
-    pub(crate) package: RepoPackage,
-    pub(crate) destination: std::path::PathBuf,
-}
-
 #[derive(Clone)]
 pub(crate) enum Confirm {
     Uninstall {
@@ -145,6 +141,7 @@ pub(crate) enum Confirm {
 }
 
 /// 在线下载对话框。
+#[derive(Clone)]
 pub(crate) struct DownloadDialog {
     pub(crate) pkg: String,
     pub(crate) name: String,
@@ -171,17 +168,6 @@ impl DownloadDialog {
         );
         Some(self.destination_dir.join(file_name))
     }
-}
-
-/// 模态框绘制后交回应用层的结果。
-///
-/// 绘制代码只做「用户想干什么」的判断，具体动作（提权、开线程、写文件）留给
-/// 应用层，`ui` 因此不需要认识 `backend` 与 `runtime`。
-pub(crate) enum ModalOutcome {
-    Confirm(Confirm),
-    StartDownload(Box<DownloadStart>),
-    /// 模态里的「打开目录」按钮：真正的打开动作由应用层执行。
-    OpenDir(std::path::PathBuf),
 }
 
 /// 正在执行或已有结果的操作。
@@ -231,6 +217,13 @@ pub(crate) enum Action {
         pkg: String,
         name: String,
     },
+    /// 在应用菜单中隐藏或恢复该包的桌面启动项。
+    SetMenuVisibility {
+        pkg: String,
+        name: String,
+        path: std::path::PathBuf,
+        hidden: bool,
+    },
     OpenDownloads,
     Copy(String),
     /// 重新读取软件源与已安装数据。
@@ -246,10 +239,44 @@ pub(crate) fn refresh_allowed(catalog: &Catalog, dialogs: &Dialogs) -> bool {
 }
 
 /// 图标缓存：图标名 → 解析结果（`None` 表示「确认没有图标」，避免每帧重试磁盘）。
-pub(crate) type IconCache = HashMap<String, Option<egui::TextureHandle>>;
+pub(crate) type IconCache = HashMap<String, Option<Arc<RenderImage>>>;
+
+/// 排序下拉的状态。
+pub(crate) type SortSelect = Entity<SelectState<SearchableVec<&'static str>>>;
+
+/// 状态列的语义，颜色由主题在绘制时决定。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowStatus {
+    NotInstalled,
+    Installed,
+    Held,
+    Update,
+}
+
+impl RowStatus {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::NotInstalled => "未安装",
+            Self::Installed => "已安装",
+            Self::Held => "已保持",
+            Self::Update => "可更新",
+        }
+    }
+
+    pub(crate) fn of(entry: &crate::model::AppEntry) -> Self {
+        if !entry.is_installed {
+            Self::NotInstalled
+        } else if entry.is_held {
+            Self::Held
+        } else if entry.has_update {
+            Self::Update
+        } else {
+            Self::Installed
+        }
+    }
+}
 
 pub(crate) struct DebDeckApp {
-    pub(crate) ctx: egui::Context,
     pub(crate) paths: AppPaths,
     pub(crate) tasks: TaskManager,
     pub(crate) rx: Receiver<BackendEvent>,
@@ -257,4 +284,23 @@ pub(crate) struct DebDeckApp {
     pub(crate) list: ListView,
     pub(crate) dialogs: Dialogs,
     pub(crate) icons: IconCache,
+    pub(crate) search_input: Entity<InputState>,
+    pub(crate) files_input: Entity<InputState>,
+    pub(crate) sort_select: SortSelect,
+    /// `Catalog::entries` 的快照，随 revision 更新；虚拟列表闭包持有它。
+    pub(crate) entries: Arc<Vec<AppEntry>>,
+    /// 快照对应的 Catalog 版本号。
+    pub(crate) entries_revision: usize,
+    /// 当前可见行下标快照。
+    pub(crate) visible: Arc<Vec<usize>>,
+    /// 快照对应的选中项，用来判断是否需要清理文件过滤。
+    pub(crate) selected_pkg: Option<String>,
+    /// 当前详情页的文件快照（已按过滤词筛选）。
+    pub(crate) files: Arc<Vec<SharedString>>,
+    /// 文件快照的凭据：`(Catalog 版本, 包名, 过滤词)`。
+    pub(crate) files_key: Option<(usize, String, String)>,
+    /// 未过滤的文件总数，供「共 N 个文件」显示。
+    pub(crate) files_total: usize,
+    /// Toast 代次：替换旧提示后，旧的定时任务据此放弃清理。
+    pub(crate) toast_generation: u64,
 }

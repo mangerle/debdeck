@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{AppEntry, InstalledData, InstalledPackage, RepoPackage, RepositoryData};
+use crate::model::{
+    AppEntry, InstalledData, InstalledPackage, MenuEntryState, RepoPackage, RepositoryData,
+};
 use crate::runtime::{CatalogUpdate, UpgradableReport};
 
 use super::state::{Counts, LoadState};
@@ -44,13 +46,6 @@ impl Catalog {
             },
             repository_loading: true,
         }
-    }
-
-    /// 测试专用：直接放入已安装数据并重建条目表。
-    #[cfg(test)]
-    pub(crate) fn with_installed(mut self, installed: InstalledData) -> Self {
-        self.apply(CatalogUpdate::default().installed(Ok(installed)));
-        self
     }
 
     /// 应用一次后端更新。返回是否改变了条目表。
@@ -138,6 +133,18 @@ impl Catalog {
             upgradable: self.entries.iter().filter(|entry| entry.has_update).count(),
         };
         self.revision += 1;
+    }
+
+    /// 更新某个已安装包的桌面菜单可见性（只改内存视图，文件由 backend 处理）。
+    pub(crate) fn set_desktop_menu_state(&mut self, pkg: &str, state: MenuEntryState) {
+        if let Some(package) = self
+            .installed
+            .as_mut()
+            .and_then(|data| data.packages.get_mut(pkg))
+            && let Some(desktop) = package.desktop.as_mut()
+        {
+            desktop.menu_state = state;
+        }
     }
 
     pub(crate) fn entries(&self) -> &[AppEntry] {
