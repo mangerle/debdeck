@@ -1,0 +1,23 @@
+// DebDeck：对 apt-get / apt-mark 的 pkexec 调用复用管理员授权。
+//
+// 目标：连续卸载/保持版本时不要在 5 分钟内反复弹密码。
+// 边界：
+//   * 只匹配 org.freedesktop.policykit.exec（pkexec）；
+//   * 只匹配 sudo/admin 组用户；
+//   * 只匹配 apt-get 与 apt-mark 两个程序；
+//   * 返回 AUTH_ADMIN_KEEP，首次仍需密码，不是免密 root。
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.policykit.exec") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (!subject.isInGroup("sudo") && !subject.isInGroup("admin")) {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    var program = "" + action.lookup("program");
+    if (program == "/usr/bin/apt-get" || program == "apt-get" ||
+        program == "/usr/bin/apt-mark" || program == "apt-mark") {
+        return polkit.Result.AUTH_ADMIN_KEEP;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

@@ -10,5 +10,9 @@ fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
+# polkit 会监视规则目录，但显式 reload 能保证新规则在安装后立刻加载。
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl reload polkit.service >/dev/null 2>&1 || true
+fi
 
 exit 0

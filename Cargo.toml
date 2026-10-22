@@ -83,6 +83,7 @@ assets = [
     ["target/release/debdeck", "usr/bin/debdeck", "755"],
     ["packaging/debdeck.desktop", "usr/share/applications/debdeck.desktop", "644"],
     ["packaging/icon-256.png", "usr/share/icons/hicolor/256x256/apps/debdeck.png", "644"],
+    ["packaging/49-debdeck.rules", "usr/share/polkit-1/rules.d/49-debdeck.rules", "644"],
     ["assets/icon.png", "usr/share/icons/hicolor/512x512/apps/debdeck.png", "644"],
     ["packaging/icon-256.png", "usr/share/pixmaps/debdeck.png", "644"],
 ]
