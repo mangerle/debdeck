@@ -18,33 +18,24 @@ pub(crate) fn show(
     _window: &mut Window,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
     let border = cx.theme().border;
     let background = cx.theme().background;
 
-    let searching = !app.list.search.is_empty();
     let allowed = refresh_allowed(&app.catalog, &app.dialogs);
     let filter = app.list.filter;
 
-    let filter_control = if searching {
-        div()
-            .text_sm()
-            .text_color(muted)
-            .child("搜索全部应用")
-            .into_any_element()
-    } else {
-        h_flex()
-            .gap(px(2.0))
-            .children(
-                Filter::ALL
-                    .iter()
-                    .copied()
-                    .map(|value| filter_button(value, filter, cx).into_any_element()),
-            )
-            .into_any_element()
-    };
+    // 搜索时也保留分类按钮：搜索在当前所选分类里进行，切分类即切换搜索范围。
+    let filter_control = h_flex()
+        .gap(px(2.0))
+        .children(
+            Filter::ALL
+                .iter()
+                .copied()
+                .map(|value| filter_button(value, filter, cx).into_any_element()),
+        )
+        .into_any_element();
 
-    // 筛选区固定宽度：搜索时只替换内容，不让整组控件收缩。
+    // 筛选区固定宽度：窗口变窄时也不收缩，保持四个按钮排成一行。
     let filter_slot = div().w(px(356.0)).flex_shrink_0().child(filter_control);
     // Select 内部是 size_full()，必须由外层容器约束宽度；直接给它 .w()
     // 会被内部的 size_full 吃掉，表现为排序框扩张、刷新被挤到右侧。

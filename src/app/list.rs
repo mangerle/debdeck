@@ -133,7 +133,8 @@ fn visible_contains(visible: &[usize], entries: &[AppEntry], pkg: &str) -> bool 
 
 /// 按筛选与排序挑选要显示的行下标。
 ///
-/// 搜索优先于筛选：一旦有查询词，就在全部应用里搜索，避免「搜得到却被筛掉」。
+/// 搜索与筛选叠加：条目既要落在当前分类里，也要匹配搜索词（无词时只看分类），
+/// 用户选了哪个分类就在哪个分类里搜。
 fn select_visible_entries(
     entries: &[AppEntry],
     search: &str,
@@ -146,15 +147,13 @@ fn select_visible_entries(
         .iter()
         .enumerate()
         .filter(|(_, entry)| {
-            if !tokens.is_empty() {
-                return matches_tokens(&entry.search_text, &tokens);
-            }
-            match filter {
+            let in_filter = match filter {
                 Filter::All => true,
                 Filter::Installed => entry.is_installed,
                 Filter::Gui => entry.is_gui,
                 Filter::Held => entry.is_held,
-            }
+            };
+            in_filter && (tokens.is_empty() || matches_tokens(&entry.search_text, &tokens))
         })
         .map(|(index, _)| index)
         .collect();
@@ -206,8 +205,10 @@ mod tests {
         assert_eq!(visible, vec![1]);
         let visible = select_visible_entries(&entries, "", Filter::All, SortKey::Size, false);
         assert_eq!(visible, vec![1, 0]);
-        // 搜索时忽略筛选条件。
+        // 搜索与筛选叠加：命中关键词还得落在所选分类里（"z" 不是界面应用）。
         let visible = select_visible_entries(&entries, "z", Filter::Gui, SortKey::Name, true);
+        assert!(visible.is_empty());
+        let visible = select_visible_entries(&entries, "z", Filter::Installed, SortKey::Name, true);
         assert_eq!(visible, vec![0]);
     }
 
