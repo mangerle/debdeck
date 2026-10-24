@@ -14,12 +14,14 @@
 mod actions;
 mod catalog;
 mod dialogs;
+mod install;
 mod list;
 mod state;
 mod update;
 
 pub(crate) use catalog::Catalog;
 pub(crate) use dialogs::Dialogs;
+pub(crate) use install::{InstallApp, PasswordUi, Phase};
 pub(crate) use list::ListView;
 // UI 层需要的状态类型集中再导出：`state` 本身保持私有，避免绘制代码绕过
 // `app` 的门面去抓内部模块。
@@ -28,6 +30,7 @@ pub(crate) use state::{
     Operation, RowStatus, SortKey, refresh_allowed,
 };
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,11 +47,25 @@ use crate::util::{APP_ID, APP_NAME, AppPaths};
 
 gpui_kit::actions!(debdeck, [Refresh]);
 
-/// 启动 DebDeck：初始化日志、抢单实例锁、开窗并进入事件循环。
+/// 启动 DebDeck。
 ///
-/// 已有实例在运行时不是错误：发一条通知后正常退出。
+/// 带 `.deb` 参数时进入安装模式：只开一个紧凑的安装窗口，不碰主窗口，也不
+/// 抢主实例锁——主窗口可以同时运行，安装完成后由 dpkg 监视触发刷新。
+/// 没有安装参数时才是常规的主窗口，并保持单实例语义。
 pub fn run() {
     init_tracing();
+
+    let mut install_args = deb_args();
+    if !install_args.is_empty() {
+        if install_args.len() > 1 {
+            tracing::warn!(
+                "一次启动只处理一个安装包，忽略其余 {} 个",
+                install_args.len() - 1
+            );
+        }
+        run_install_window(install_args.remove(0));
+        return;
+    }
 
     let _instance = match InstanceLock::acquire() {
         Ok(instance) => instance,
@@ -60,7 +77,7 @@ pub fn run() {
     };
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
 
@@ -72,6 +89,35 @@ pub fn run() {
                 cx.quit();
             }
         });
+}
+
+/// 安装模式：单窗口、单安装包。
+fn run_install_window(path: PathBuf) {
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::AllAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+
+            if let Err(error) = gpui_kit::open_window(install_window_options(), cx, |window, cx| {
+                crate::ui::theme::configure(cx, Some(window));
+                cx.new(|cx| InstallApp::new(&path, window, cx))
+            }) {
+                tracing::error!("无法打开安装窗口：{error:#}");
+                cx.quit();
+            }
+        });
+}
+
+/// 启动参数中的 `.deb` 路径（按传入顺序）。
+fn deb_args() -> Vec<PathBuf> {
+    std::env::args_os()
+        .skip(1)
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("deb"))
+        })
+        .collect()
 }
 
 fn sort_from_label(label: &str) -> (SortKey, bool) {
@@ -101,6 +147,22 @@ fn window_options() -> WindowOptions {
     }
 }
 
+/// 安装窗口只放得下包信息与按钮，不复用主窗口的尺寸。
+fn install_window_options() -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+            point(px(160.0), px(120.0)),
+            size(px(520.0), px(360.0)),
+        ))),
+        window_min_size: Some(size(px(460.0), px(300.0))),
+        app_id: Some(APP_ID.to_string()),
+        icon: window_icon(),
+        window_decorations: Some(WindowDecorations::Client),
+        // 安装窗口自绘标题条（无最小化/最大化/关闭），由它负责拖动窗口。
+        ..TitleBar::window_options()
+    }
+}
+
 /// 日志只写 stderr：图形程序没有 tty，`RUST_LOG` 决定详细程度。
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -110,6 +172,24 @@ fn init_tracing() {
         )
         .with_writer(std::io::stderr)
         .init();
+}
+
+/// 后端事件循环：每次唤醒处理一批事件并请求一次重绘。
+fn spawn_wake_loop(wake_rx: async_channel::Receiver<()>, cx: &mut Context<DebDeckApp>) {
+    cx.spawn(async move |this, cx| {
+        while wake_rx.recv().await.is_ok() {
+            let alive = this
+                .update(cx, |app, cx| {
+                    app.poll_events();
+                    cx.notify();
+                })
+                .is_ok();
+            if !alive {
+                break;
+            }
+        }
+    })
+    .detach();
 }
 
 impl DebDeckApp {
@@ -173,20 +253,7 @@ impl DebDeckApp {
         })
         .detach();
 
-        cx.spawn(async move |this, cx| {
-            while wake_rx.recv().await.is_ok() {
-                let alive = this
-                    .update(cx, |app, cx| {
-                        app.poll_events();
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !alive {
-                    break;
-                }
-            }
-        })
-        .detach();
+        spawn_wake_loop(wake_rx, cx);
 
         cx.bind_keys([KeyBinding::new("f5", Refresh, None)]);
         let weak = cx.entity().downgrade();

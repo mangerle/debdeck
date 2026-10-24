@@ -5,10 +5,23 @@
 //! 读写系统的部分在 `backend`，线程与事件在 `runtime`，本模块全部是纯数据与纯函数。
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::deb822::Stanza;
 use crate::util::{build_search_text, debian_version_cmp};
+
+/// 一个通过预检的本地 `.deb` 文件。
+///
+/// 只描述文件本身，不包含安装状态；读取与校验在 `backend::deb_file`。
+#[derive(Clone, Debug)]
+pub struct DebFile {
+    /// 规范化后的绝对路径（符号链接已解析）。
+    pub path: PathBuf,
+    pub metadata: PackageMetadata,
+    /// `.deb` 文件本身的字节数，不是安装后的占用。
+    pub file_size: u64,
+}
 
 /// 软件包的控制元数据，字段名与 deb822 控制字段一一对应。
 #[derive(Clone, Debug, Default)]

@@ -12,6 +12,7 @@
 //! 入口，语义与 `apt list --upgradable` 一致）。两者都属于 apt 生态，避免与
 //! `dpkg --set-selections` 混用造成「谁权威」的歧义。
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -90,6 +91,38 @@ pub fn set_hold_state(pkg: &str, hold: bool) -> Result<()> {
     Ok(())
 }
 
+/// 本地安装的 apt-get 参数（不含 `pkexec`）。
+///
+/// 内嵌认证代理需要自己启动 `pkexec`，因此把参数构造单独暴露出来，避免安装
+/// 参数在两条调用路径上各写一份。首个参数必须是绝对路径：pkexec 不接受
+/// 仅靠 `PATH` 解析的程序名。
+///
+/// `--reinstall` 不能省：本地 deb 的版本与已安装版本相同时，`apt-get install`
+/// 会直接判定「已是最新版」并成功退出，用户点了一次安装却什么都没发生。
+pub fn local_install_args(path: &Path) -> Result<Vec<String>> {
+    let path = super::deb_file::canonicalize(path)?;
+    let path = path
+        .to_str()
+        .context("安装包路径包含非 UTF-8 字符，无法传给 apt-get")?;
+    Ok(vec![
+        "/usr/bin/apt-get".to_string(),
+        "install".to_string(),
+        "--reinstall".to_string(),
+        "-y".to_string(),
+        "-o".to_string(),
+        "Dpkg::Options::=--force-confdef".to_string(),
+        "-o".to_string(),
+        "Dpkg::Options::=--force-confold".to_string(),
+        path.to_string(),
+    ])
+}
+
+/// 以管理员身份执行一组命令参数（交给系统 polkit 认证代理）。
+pub(crate) fn run_privileged_argv(args: &[String]) -> Result<String> {
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_privileged(&refs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +145,11 @@ mod tests {
         // 因此这里只断言错误信息本身）。
         let error = set_hold_state("bad;rm -rf /", true).unwrap_err();
         assert!(error.to_string().contains("无效的软件包名称"), "{error}");
+    }
+
+    #[test]
+    fn rejects_missing_install_file_before_pkexec() {
+        let error = local_install_args(Path::new("/no/such/package.deb")).unwrap_err();
+        assert!(format!("{error:#}").contains("找不到安装包"), "{error:#}");
     }
 }

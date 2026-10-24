@@ -20,14 +20,18 @@
 //! * `desktop`    —— .desktop 解析、图标查找、启动
 //! * `shell`      —— 桌面集成副作用（通知、打开文件管理器）
 //! * `privileged` —— 经 pkexec 提权的包操作
+//! * `deb_file`   —— 本地 `.deb` 预检与控制信息解析
+//! * `polkit_agent` —— 内嵌 polkit 认证代理（密码框留在安装窗口）
 //! * `download`   —— 在线获取安装包
 //! * `repack`     —— 从已安装文件离线重建 deb
 
 pub mod apt;
+pub mod deb_file;
 pub mod desktop;
 pub mod download;
 pub mod dpkg;
 pub mod fs_layout;
+pub mod polkit_agent;
 pub mod privileged;
 pub mod repack;
 pub mod shell;
