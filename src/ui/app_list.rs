@@ -1,8 +1,11 @@
-//! 应用列表：单列名称 + 状态徽标。
+//! 应用列表：单列名称 + 状态圆点 + 状态徽标。
 //!
 //! 一张表有几万行，全部绘制会掉帧；GPUI 的 `uniform_list` 只画视口内的行。
 //! 渲染闭包持有 `Arc<Vec<AppEntry>>` 与可见下标的快照，不借出整个 `Catalog`，
 //! 也不会在搜索时为每一行复制字符串。版本、大小、更新时间等元数据在右侧详情展示。
+//!
+//! 行不再做斑马纹：靠悬停与选中两档底色区分就够了，圆角内缩的行看起来也更像
+//! 一张张卡片，而不是一张表格。
 
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::*;
@@ -11,7 +14,7 @@ use crate::app::{DebDeckApp, Filter, RowStatus};
 use crate::model::AppEntry;
 use crate::ui::theme::status_color;
 
-const ROW_HEIGHT: f32 = 46.0;
+const ROW_HEIGHT: f32 = 44.0;
 
 /// 绘制列表；选中通过回调写回 [`DebDeckApp`]。
 pub(crate) fn show(
@@ -30,11 +33,8 @@ pub(crate) fn show(
 
     let list = uniform_list("app_rows", visible.len(), move |range, _window, cx| {
         let theme = cx.theme();
-        let row_border = theme.table_row_border;
-        let row_even = theme.table_even;
-        let row_hover = theme.table_hover;
-        let row_active = theme.table_active;
-        let row_active_border = theme.table_active_border;
+        let row_hover = theme.list_hover;
+        let row_active = theme.list_active;
         let muted = theme.muted_foreground;
         let foreground = theme.foreground;
 
@@ -53,8 +53,8 @@ pub(crate) fn show(
                     .w_full()
                     .px(px(10.0))
                     .items_center()
-                    .border_b_1()
-                    .border_color(row_border)
+                    .gap(px(10.0))
+                    .rounded(px(8.0))
                     .cursor_pointer()
                     .hover(move |this| this.bg(row_hover))
                     .on_click(move |_, window, cx| {
@@ -64,27 +64,13 @@ pub(crate) fn show(
                     });
 
                 if is_selected {
-                    element = element
-                        .bg(row_active)
-                        .border_l_2()
-                        .border_color(row_active_border);
-                } else if index % 2 == 1 {
-                    element = element.bg(row_even);
+                    element = element.bg(row_active);
                 }
 
                 element
+                    .child(status_dot(badge_color))
                     .child(name_cell(entry, foreground, muted))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded(px(999.0))
-                            .bg(badge_color.opacity(0.14))
-                            .text_color(badge_color)
-                            .text_xs()
-                            .child(status.label()),
-                    )
+                    .children(badge(status, badge_color))
                     .into_any_element()
             })
             .collect()
@@ -92,8 +78,39 @@ pub(crate) fn show(
 
     v_flex()
         .size_full()
-        .child(list.flex_1().w_full())
+        .child(list.flex_1().w_full().px(px(6.0)).py(px(6.0)))
         .into_any_element()
+}
+
+/// 左侧状态圆点：一眼看出这一行是装好的、可更新的还是还没装的。
+fn status_dot(color: Hsla) -> AnyElement {
+    div()
+        .w(px(7.0))
+        .h(px(7.0))
+        .rounded(px(999.0))
+        .bg(color)
+        .flex_shrink_0()
+        .into_any_element()
+}
+
+/// 右侧徽标。只标出需要留意的两种状态，「已安装 / 未安装」交给圆点表达。
+fn badge(status: RowStatus, color: Hsla) -> Option<AnyElement> {
+    match status {
+        RowStatus::Held | RowStatus::Update => Some(
+            div()
+                .flex_shrink_0()
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(999.0))
+                .bg(color.opacity(0.16))
+                .text_color(color)
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .child(status.label())
+                .into_any_element(),
+        ),
+        RowStatus::Installed | RowStatus::NotInstalled => None,
+    }
 }
 
 fn name_cell(entry: &AppEntry, foreground: Hsla, muted: Hsla) -> AnyElement {
@@ -124,7 +141,7 @@ fn empty_hint(app: &DebDeckApp, cx: &Context<DebDeckApp>) -> AnyElement {
     let hint = if !app.list.search.is_empty() {
         Some("试试切换筛选条件，或清空搜索关键词")
     } else if app.list.filter == Filter::Gui {
-        Some("当前没有界面应用，可切换到“全部应用”查看命令行软件包")
+        Some("当前没有界面应用，可切换到“全部”查看命令行软件包")
     } else {
         None
     };

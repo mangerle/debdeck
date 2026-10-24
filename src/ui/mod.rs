@@ -41,8 +41,8 @@ pub(crate) fn show(
     let main = h_resizable("main_split")
         .child(
             resizable_panel()
-                .size(px(520.0))
-                .size_range(px(360.0)..px(900.0))
+                .size(px(400.0))
+                .size_range(px(300.0)..px(760.0))
                 .child(list),
         )
         .child(resizable_panel().child(details));

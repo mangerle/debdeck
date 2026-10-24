@@ -113,22 +113,10 @@ pub(crate) fn show(
     ));
 
     let content = v_flex()
-        .gap(px(2.0))
-        .children(rows)
-        .child(
-            div()
-                .pt(px(12.0))
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("描述"),
-        )
-        .child(
-            div()
-                .text_sm()
-                .whitespace_normal()
-                .child(value_or_dash(&info.description).to_string()),
-        )
-        .child(div().h(px(12.0)));
+        .gap(px(10.0))
+        .child(card(rows.into_iter().collect(), cx))
+        .child(description_card(&info.description, cx))
+        .child(div().h(px(8.0)));
 
     div()
         .id("detail-info-scroll")
@@ -137,6 +125,47 @@ pub(crate) fn show(
         .w_full()
         .overflow_y_scroll()
         .child(content)
+        .into_any_element()
+}
+
+/// 元数据卡片：一块带边框的浅色底板，把成对的标签和取值收在一起。
+fn card(rows: Vec<AnyElement>, cx: &Context<crate::app::DebDeckApp>) -> AnyElement {
+    let theme = cx.theme();
+    div()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.muted)
+        .px(px(12.0))
+        .py(px(6.0))
+        .children(rows)
+        .into_any_element()
+}
+
+/// 描述单独一张卡片：正文可长可短，和上面的字段表区分开。
+fn description_card(description: &str, cx: &Context<crate::app::DebDeckApp>) -> AnyElement {
+    let theme = cx.theme();
+    div()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.muted)
+        .px(px(12.0))
+        .py(px(10.0))
+        .gap(px(6.0))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("描述"),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .whitespace_normal()
+                .child(value_or_dash(description).to_string()),
+        )
         .into_any_element()
 }
 

@@ -39,10 +39,20 @@ impl Filter {
 
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::All => "全部应用",
-            Self::Installed => "已安装应用",
-            Self::Gui => "界面应用",
-            Self::Held => "已保持版本",
+            Self::All => "全部",
+            Self::Installed => "已安装",
+            Self::Gui => "界面",
+            Self::Held => "已保持",
+        }
+    }
+
+    /// 分类的完整说明。顶栏里的分段控件只放短标签，含义靠这里说明。
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Self::All => "显示软件源与系统中的全部应用",
+            Self::Installed => "只显示已安装的应用",
+            Self::Gui => "只显示带桌面启动项的图形界面应用",
+            Self::Held => "只显示已保持版本、不随更新升级的应用",
         }
     }
 }

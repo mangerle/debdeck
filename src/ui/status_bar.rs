@@ -32,7 +32,7 @@ pub(crate) fn show(
         .text_color(muted)
         .truncate()
         .child(format!(
-            "共 {} 个应用 · 已安装 {} 个 · 界面应用 {} 个 · 保持版本 {} 个 · 可更新 {} 个 · 显示 {visible} 个",
+            "共 {} 个应用 · 已安装 {} · 界面 {} · 保持 {} · 可更新 {} · 显示 {visible}",
             counts.total, counts.installed, counts.gui, counts.held, counts.upgradable,
         ));
 
@@ -133,6 +133,16 @@ fn repository_status(
     div()
         .text_xs()
         .text_color(cx.theme().muted_foreground)
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .child(
+            div()
+                .w(px(6.0))
+                .h(px(6.0))
+                .rounded(px(999.0))
+                .bg(cx.theme().success),
+        )
         .child("软件源已加载")
         .into_any_element()
 }

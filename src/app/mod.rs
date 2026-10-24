@@ -135,9 +135,9 @@ fn window_options() -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
             point(px(80.0), px(80.0)),
-            size(px(1400.0), px(880.0)),
+            size(px(1120.0), px(720.0)),
         ))),
-        window_min_size: Some(size(px(1080.0), px(680.0))),
+        window_min_size: Some(size(px(880.0), px(560.0))),
         app_id: Some(APP_ID.to_string()),
         icon: window_icon(),
         // GNOME/Wayland 不支持服务端装饰；强制客户端装饰，由 TitleBar 自绘

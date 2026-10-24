@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use gpui_kit::component::Theme;
-use gpui_kit::{IntoElement, ParentElement as _, RenderImage, Styled as _, div, px};
+use gpui_kit::{FontWeight, IntoElement, ParentElement as _, RenderImage, Styled as _, div, px};
 use smallvec::smallvec;
 
 use crate::app::IconCache;
@@ -40,12 +40,13 @@ pub(crate) fn draw_letter_icon(name: &str, theme: &Theme) -> impl IntoElement {
         .next()
         .map_or_else(|| "?".to_string(), |ch| ch.to_uppercase().to_string());
     div()
-        .w(px(48.0))
-        .h(px(48.0))
-        .rounded(px(12.0))
+        .w(px(44.0))
+        .h(px(44.0))
+        .rounded(px(10.0))
         .bg(theme.primary)
         .text_color(theme.primary_foreground)
-        .text_xl()
+        .text_lg()
+        .font_weight(FontWeight::SEMIBOLD)
         .flex()
         .items_center()
         .justify_center()

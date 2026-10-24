@@ -8,10 +8,11 @@ pub mod files;
 pub mod info;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Selectable as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, Context, FontWeight, IntoElement, ParentElement as _, Styled as _, Window, div,
+    AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ObjectFit,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div,
     img, px,
 };
 
@@ -51,9 +52,8 @@ pub(crate) fn show(
 
     let header = show_header(&mut app.icons, &context, cx);
     let actions = show_actions(&app.catalog, &app.paths, &context, cx);
-    let tab = app.list.detail_tab;
     let tabs = show_tabs(&app.list, &context, cx);
-    let body = match tab {
+    let body = match app.list.detail_tab {
         DetailTab::Info => info::show(&context, cx),
         DetailTab::Files => {
             files::show(&context, &app.files, app.files_total, &app.files_input, cx)
@@ -68,7 +68,7 @@ pub(crate) fn show(
         .child(header)
         .child(actions)
         .child(tabs)
-        .child(v_flex().flex_1().min_h(px(0.0)).pt(px(8.0)).child(body))
+        .child(v_flex().flex_1().min_h(px(0.0)).pt(px(10.0)).child(body))
         .into_any_element()
 }
 
@@ -86,28 +86,37 @@ fn placeholder(cx: &mut Context<DebDeckApp>) -> AnyElement {
         .into_any_element()
 }
 
-/// 图标 + 名称 + 状态徽标。
+/// 图标 + 名称 + 状态徽标。头部与下面的操作区之间用一条细线分开。
 fn show_header(
     icons: &mut IconCache,
     context: &DetailContext,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
     let entry = &context.entry;
-    let muted = cx.theme().muted_foreground;
-    let (status, color) = entry_status(cx.theme(), entry);
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let border = theme.border;
+    let (status, color) = entry_status(theme, entry);
 
     let icon = match context
         .desktop
         .and_then(|desktop| load_icon_texture(icons, &desktop.icon))
     {
-        Some(texture) => img(texture).w(px(48.0)).h(px(48.0)).into_any_element(),
-        None => draw_letter_icon(&entry.display_name, cx.theme()).into_any_element(),
+        Some(texture) => img(texture)
+            .w(px(44.0))
+            .h(px(44.0))
+            .rounded(px(10.0))
+            .object_fit(ObjectFit::Cover)
+            .into_any_element(),
+        None => draw_letter_icon(&entry.display_name, theme).into_any_element(),
     };
 
     h_flex()
         .items_center()
         .gap(px(12.0))
-        .pt(px(10.0))
+        .pb(px(12.0))
+        .border_b_1()
+        .border_color(border)
         .child(icon)
         .child(
             v_flex()
@@ -131,13 +140,14 @@ fn show_header(
         .child(div().flex_1())
         .child(
             div()
+                .flex_shrink_0()
                 .px(px(8.0))
                 .py(px(2.0))
                 .rounded(px(999.0))
-                .bg(color.opacity(0.14))
+                .bg(color.opacity(0.16))
                 .text_color(color)
                 .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(FontWeight::MEDIUM)
                 .child(status),
         )
         .into_any_element()
@@ -169,9 +179,10 @@ fn show_actions(
     } else {
         "启动应用"
     };
+    // 「打开」是这一屏的主操作，用主色按钮；其余动作退到次级样式。
     let open = Button::new("open-app")
         .label("打开")
-        .secondary()
+        .primary()
         .disabled(!(installed && has_desktop))
         .tooltip(open_tooltip)
         .on_click(cx.listener(move |this, _, _, cx| {
@@ -338,7 +349,7 @@ fn show_actions(
         .child(open)
         .child(uninstall)
         .child(hold)
-        .child(div().w(px(1.0)).h(px(20.0)).bg(border))
+        .child(div().w(px(1.0)).h(px(18.0)).bg(border).flex_shrink_0())
         .child(download)
         .child(build)
         .children(menu_toggle)
@@ -355,42 +366,71 @@ fn show_actions(
         .into_any_element()
 }
 
-/// 标签页切换条。
+/// 标签页切换条。激活项用一段品牌色下划线标出。
 fn show_tabs(list: &ListView, context: &DetailContext, cx: &mut Context<DebDeckApp>) -> AnyElement {
     let border = cx.theme().border;
     let files_label = format!(
         "文件 ({})",
         context.installed.map_or(0, |package| package.files.len())
     );
-    let info_selected = list.detail_tab == DetailTab::Info;
+    let active = list.detail_tab;
 
     h_flex()
-        .gap(px(4.0))
-        .pb(px(4.0))
+        .gap(px(18.0))
         .border_b_1()
         .border_color(border)
-        .child(
-            Button::new("tab-info")
-                .label("信息")
-                .compact()
-                .ghost()
-                .selected(info_selected)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.list.detail_tab = DetailTab::Info;
-                    cx.notify();
-                })),
-        )
-        .child(
-            Button::new("tab-files")
-                .label(files_label)
-                .compact()
-                .ghost()
-                .selected(!info_selected)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.list.detail_tab = DetailTab::Files;
-                    cx.notify();
-                })),
-        )
+        .child(tab_button(
+            "信息",
+            "detail-tab-info",
+            DetailTab::Info,
+            active == DetailTab::Info,
+            cx,
+        ))
+        .child(tab_button(
+            &files_label,
+            "detail-tab-files",
+            DetailTab::Files,
+            active == DetailTab::Files,
+            cx,
+        ))
+        .into_any_element()
+}
+
+fn tab_button(
+    label: &str,
+    id: &'static str,
+    tab: DetailTab,
+    selected: bool,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let theme = cx.theme();
+    let foreground = theme.foreground;
+    let muted = theme.muted_foreground;
+    let underline = if selected {
+        theme.primary
+    } else {
+        theme.transparent
+    };
+
+    div()
+        .id(id)
+        .pb(px(8.0))
+        .border_b_2()
+        .border_color(underline)
+        .text_sm()
+        .font_weight(if selected {
+            FontWeight::MEDIUM
+        } else {
+            FontWeight::NORMAL
+        })
+        .text_color(if selected { foreground } else { muted })
+        .cursor_pointer()
+        .hover(move |this| this.text_color(foreground))
+        .child(label.to_string())
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.list.detail_tab = tab;
+            cx.notify();
+        }))
         .into_any_element()
 }
 
@@ -415,14 +455,15 @@ pub(crate) fn field_with_value(
     child: AnyElement,
     cx: &Context<DebDeckApp>,
 ) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
     h_flex()
         .items_start()
-        .gap(px(8.0))
-        .py(px(2.0))
+        .gap(px(10.0))
+        .py(px(3.0))
         .child(
             div()
-                .w(px(88.0))
+                .w(px(76.0))
                 .flex_shrink_0()
                 .text_sm()
                 .text_color(muted)

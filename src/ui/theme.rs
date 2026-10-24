@@ -33,21 +33,25 @@ pub(crate) fn configure(cx: &mut App, window: Option<&mut gpui_kit::Window>) {
 }
 
 /// Ubuntu 橙。主按钮、选中行与强调文字共用这一组色。
+///
+/// 两档橙：品牌橙偏亮，用作色块与强调；按钮填充要更深一档，
+/// 否则白字压在亮橙上对比度不够，看久了发飘。
 fn apply_accent(theme: &mut Theme) {
     let accent = hsla(0.055, 0.86, 0.52, 1.0);
-    let hover = hsla(0.055, 0.86, 0.45, 1.0);
-    let active = hsla(0.055, 0.86, 0.38, 1.0);
+    let fill = hsla(0.055, 0.86, 0.42, 1.0);
+    let fill_hover = hsla(0.055, 0.86, 0.38, 1.0);
+    let fill_active = hsla(0.055, 0.86, 0.34, 1.0);
     let foreground = hsla(0.0, 0.0, 1.0, 1.0);
 
-    theme.primary = accent;
-    theme.primary_hover = hover;
-    theme.primary_active = active;
+    theme.primary = fill;
+    theme.primary_hover = fill_hover;
+    theme.primary_active = fill_active;
     theme.primary_foreground = foreground;
     theme.accent = accent;
     theme.accent_foreground = foreground;
-    theme.button_primary = accent;
-    theme.button_primary_hover = hover;
-    theme.button_primary_active = active;
+    theme.button_primary = fill;
+    theme.button_primary_hover = fill_hover;
+    theme.button_primary_active = fill_active;
     theme.button_primary_foreground = foreground;
     theme.ring = accent.opacity(0.45);
     theme.selection = accent.opacity(0.18);
