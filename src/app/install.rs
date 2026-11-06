@@ -21,6 +21,10 @@ use crate::backend::polkit_agent::{self, AuthResponse, InstallEvent, InstallSess
 use crate::model::DebFile;
 use crate::ui::install::{ACTION_BAR_HEIGHT, CONTENT_PADDING, CONTENT_SLACK, HEADER_HEIGHT};
 
+/// 安装窗口的最小高度。进行中和完成态的内容量不同，若不设下限，同一流程的
+/// 窗口会在阶段切换时明显变矮；对齐尺寸比逐像素贴内容更稳定，也更耐看。
+pub(super) const MIN_WINDOW_HEIGHT: f32 = 300.0;
+
 /// 安装窗口的流程。
 #[derive(Clone)]
 pub(crate) enum Phase {
@@ -51,8 +55,8 @@ pub(crate) struct InstallApp {
     clear_password: bool,
     focus_password: bool,
     mask: Option<bool>,
-    /// 已经申请过的窗口高度。平台的 resize 是异步的，不能靠读窗口实际尺寸判断
-    /// 是否还需要调整，否则每帧都会重复申请。
+    /// 首帧确定后的稳定窗口高度。平台的 resize 是异步的，不能靠读窗口实际尺寸
+    /// 判断是否还需要调整；这里也借此避免安装阶段切换时反复改尺寸。
     window_height: Pixels,
     /// 内容区的滚动句柄：内容溢出时由它记录边界，窗口据此量出内容高度。
     pub(crate) content_handle: ScrollHandle,
@@ -90,13 +94,14 @@ impl InstallApp {
         }
     }
 
-    /// 让窗口高度贴住内容。
+    /// 首次布局后固定窗口高度。
     ///
-    /// 各阶段的内容体量差别很大：确认页要放下整张包信息卡片，授权页只放得下
-    /// 一个密码框。用同一个高度必然一边留白一边裁切，所以窗口跟着内容走。
-    /// 高度取自内容区的实测边界，不靠估算 —— 估错了要么留白要么把按钮挤出
-    /// 窗口。
+    /// 高度取自首屏确认页的实测边界，并保留窗口初始高度，避免点击安装后在同一
+    /// 流程中突然缩矮。后续阶段内容不同也沿用这个高度，超出时由内容区滚动。
     fn fit_window(&mut self, window: &mut Window) {
+        if self.window_height > px(0.0) {
+            return;
+        }
         let Some(bounds) = self.content_handle.bounds_for_item(0) else {
             return;
         };
@@ -104,13 +109,14 @@ impl InstallApp {
         if self.has_actions() {
             chrome += ACTION_BAR_HEIGHT;
         }
-        let desired = bounds.size.height + px(chrome + CONTENT_SLACK);
-        if (self.window_height - desired).abs() < px(0.5) {
-            return;
-        }
+        let viewport = window.viewport_size();
+        let desired = (bounds.size.height + px(chrome + CONTENT_SLACK))
+            .max(px(MIN_WINDOW_HEIGHT))
+            .max(viewport.height);
         self.window_height = desired;
-        let width = window.viewport_size().width;
-        window.resize(size(width, desired));
+        if (viewport.height - desired).abs() >= px(0.5) {
+            window.resize(size(viewport.width, desired));
+        }
     }
 
     /// 这一阶段有没有底部按钮栏。没有的话窗口就不必为它留出高度。
