@@ -11,8 +11,10 @@
 //! 所以内容再长也不会把「取消 / 确认」挤出窗口。窗口高度在首帧测量后固定，
 //! 避免阶段切换时窗口跳动，见 [`crate::app::InstallApp::fit_window`]。
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use gpui_kit::RenderImage;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputContentType};
@@ -22,6 +24,7 @@ use gpui_kit::*;
 
 use crate::app::{InstallApp, PasswordUi, Phase};
 use crate::model::DebFile;
+use crate::ui::APP_ICON_SIZE;
 use crate::util::{APP_NAME, format_bytes, format_kib};
 
 /// 标题条高度。
@@ -144,7 +147,7 @@ pub(crate) fn show(
 /// 多余的窗口按钮只会挤掉本来就不宽裕的内容区。
 fn header(
     subtitle: &str,
-    app_icon: Option<std::sync::Arc<gpui_kit::RenderImage>>,
+    app_icon: Option<Arc<RenderImage>>,
     window: &mut Window,
     cx: &mut Context<InstallApp>,
 ) -> AnyElement {
@@ -165,9 +168,9 @@ fn header(
         .bg(theme.title_bar)
         .children(app_icon.map(|icon| {
             img(icon)
-                .w(px(18.0))
-                .h(px(18.0))
-                .rounded(px(4.5))
+                .w(px(APP_ICON_SIZE))
+                .h(px(APP_ICON_SIZE))
+                .rounded(px(6.0))
                 .object_fit(ObjectFit::Cover)
         }))
         .child(

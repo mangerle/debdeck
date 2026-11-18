@@ -62,6 +62,11 @@ pub(crate) fn draw_letter_icon(name: &str, theme: &Theme) -> impl IntoElement {
         .child(letter)
 }
 
+/// 标题栏图标的逻辑尺寸。
+pub(crate) const APP_ICON_SIZE: f32 = 24.0;
+/// 按 2x 缩放准备纹理，避免 GPU 从 512px 原图直接缩到 24px。
+const APP_ICON_TEXTURE_SIZE: u32 = 48;
+
 /// 随二进制内嵌的应用图标，不依赖安装路径。
 fn embedded_icon() -> Option<image::RgbaImage> {
     image::load_from_memory(include_bytes!("../../assets/icon.png"))
@@ -69,9 +74,16 @@ fn embedded_icon() -> Option<image::RgbaImage> {
         .map(|image| image.to_rgba8())
 }
 
-/// 标题栏使用的 GPUI 图像纹理；启动时只需解码一次。
+/// 标题栏使用的 GPUI 图像纹理；启动时只需解码和高质量缩放一次。
 pub(crate) fn app_icon_texture() -> Option<Arc<RenderImage>> {
-    let frame = image::Frame::new(to_bgra(embedded_icon()?));
+    let icon = embedded_icon()?;
+    let icon = image::imageops::resize(
+        &icon,
+        APP_ICON_TEXTURE_SIZE,
+        APP_ICON_TEXTURE_SIZE,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let frame = image::Frame::new(to_bgra(icon));
     Some(Arc::new(RenderImage::new(smallvec![frame])))
 }
 

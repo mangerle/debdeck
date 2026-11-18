@@ -43,7 +43,7 @@ use gpui_kit::*;
 
 use crate::backend::shell;
 use crate::runtime::{InstanceLock, Waker};
-use crate::ui::window_icon;
+use crate::ui::{APP_ICON_SIZE, window_icon};
 use crate::util::{APP_ID, APP_NAME, AppPaths};
 
 gpui_kit::actions!(debdeck, [Refresh]);
@@ -400,9 +400,9 @@ impl Render for DebDeckApp {
                 .gap(px(8.0))
                 .children(self.app_icon.clone().map(|icon| {
                     img(icon)
-                        .w(px(18.0))
-                        .h(px(18.0))
-                        .rounded(px(4.5))
+                        .w(px(APP_ICON_SIZE))
+                        .h(px(APP_ICON_SIZE))
+                        .rounded(px(6.0))
                         .object_fit(ObjectFit::Cover)
                 }))
                 .child(
