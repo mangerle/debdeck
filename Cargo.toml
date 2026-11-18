@@ -84,8 +84,15 @@ DebDeck 是一款 Ubuntu 原生的 APT/dpkg 应用管理器。
 assets = [
     ["target/release/debdeck", "usr/bin/debdeck", "755"],
     ["packaging/debdeck.desktop", "usr/share/applications/debdeck.desktop", "644"],
-    ["packaging/icon-256.png", "usr/share/icons/hicolor/256x256/apps/debdeck.png", "644"],
     ["packaging/49-debdeck.rules", "usr/share/polkit-1/rules.d/49-debdeck.rules", "644"],
-    ["assets/icon.png", "usr/share/icons/hicolor/512x512/apps/debdeck.png", "644"],
-    ["packaging/icon-256.png", "usr/share/pixmaps/debdeck.png", "644"],
+    ["assets/logo/debdeck-logo.svg", "usr/share/icons/hicolor/scalable/apps/debdeck.svg", "644"],
+    ["packaging/icons/16x16.png", "usr/share/icons/hicolor/16x16/apps/debdeck.png", "644"],
+    ["packaging/icons/24x24.png", "usr/share/icons/hicolor/24x24/apps/debdeck.png", "644"],
+    ["packaging/icons/32x32.png", "usr/share/icons/hicolor/32x32/apps/debdeck.png", "644"],
+    ["packaging/icons/48x48.png", "usr/share/icons/hicolor/48x48/apps/debdeck.png", "644"],
+    ["packaging/icons/64x64.png", "usr/share/icons/hicolor/64x64/apps/debdeck.png", "644"],
+    ["packaging/icons/128x128.png", "usr/share/icons/hicolor/128x128/apps/debdeck.png", "644"],
+    ["packaging/icons/256x256.png", "usr/share/icons/hicolor/256x256/apps/debdeck.png", "644"],
+    ["packaging/icons/512x512.png", "usr/share/icons/hicolor/512x512/apps/debdeck.png", "644"],
+    ["packaging/icons/256x256.png", "usr/share/pixmaps/debdeck.png", "644"],
 ]
