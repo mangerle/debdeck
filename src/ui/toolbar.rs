@@ -3,11 +3,11 @@
 //! 横向空间是稀缺资源：窗口收窄时搜索框先让步，分类、排序与刷新始终完整可见。
 //! 分类切换做成一段分段控件，选中项是一颗品牌橙药丸，而不是四个散落的按钮。
 
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::select::Select;
-use gpui_kit::component::{ActiveTheme as _, h_flex};
-use gpui_kit::component::Disableable as _;
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, h_flex};
 use gpui_kit::*;
 
 use crate::app::{Action, DebDeckApp, Filter, refresh_allowed};
@@ -100,7 +100,9 @@ fn filter_button(value: Filter, current: Filter, cx: &mut Context<DebDeckApp>) -
             .color(theme.primary)
             .foreground(theme.primary_foreground)
             .hover(theme.primary_hover)
-            .active(theme.primary_active)
+            // `ButtonCustomVariant::color` 在普通态会与透明色混合；选中态走
+            // `selected()`/`active`，必须直接给品牌橙，否则会透出底下的灰色轨道。
+            .active(theme.primary)
     } else {
         ButtonCustomVariant::new(cx)
             .color(theme.transparent)
@@ -113,6 +115,7 @@ fn filter_button(value: Filter, current: Filter, cx: &mut Context<DebDeckApp>) -
         .label(value.label())
         .compact()
         .custom(variant)
+        .selected(active)
         .tooltip(value.hint())
         .on_click(cx.listener(move |this, _, _, cx| {
             this.list.filter = value;

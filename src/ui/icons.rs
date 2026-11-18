@@ -25,12 +25,21 @@ pub(crate) fn load_icon_texture(
     }
     let texture = resolve_icon_path(icon_name).and_then(|path| {
         image::open(&path).ok().map(|image| {
-            let frame = image::Frame::new(image.to_rgba8());
+            let frame = image::Frame::new(to_bgra(image.to_rgba8()));
             Arc::new(RenderImage::new(smallvec![frame]))
         })
     });
     cache.insert(icon_name.to_string(), texture.clone());
     texture
+}
+
+/// GPUI 的 `RenderImage` 按 BGRA 上传纹理；`image` crate 解码得到的是 RGBA。
+/// 这里只交换红、蓝通道，类型仍用 `RgbaImage` 作为字节容器。
+fn to_bgra(mut image: image::RgbaImage) -> image::RgbaImage {
+    for pixel in image.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    image
 }
 
 /// 没有图标时的兜底：色块 + 首字母。
@@ -61,4 +70,15 @@ pub fn window_icon() -> Option<Arc<image::RgbaImage>> {
         .ok()?
         .to_rgba8();
     Some(Arc::new(image))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_rgba_pixels_to_the_bgra_layout_gpui_expects() {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 4]));
+        assert_eq!(to_bgra(image).get_pixel(0, 0).0, [3, 2, 1, 4]);
+    }
 }
