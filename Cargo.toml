@@ -3,6 +3,16 @@ name = "debdeck"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
+authors = ["wangle"]
+repository = "https://github.com/mangerle/debdeck"
+homepage = "https://github.com/mangerle/debdeck"
+documentation = "https://github.com/mangerle/debdeck#readme"
+readme = "README.md"
+keywords = ["apt", "dpkg", "deb", "ubuntu", "gpui"]
+default-run = "debdeck"
+# This is a desktop application distributed through GitHub Releases, not a
+# crates.io library. Refuse accidental publication.
+publish = false
 # 这行不是注释：cargo-deb 与 crates.io 都把它当作 control 的 Description 摘要，
 # 缺省会退化成 "[generated from Rust crate debdeck]"。
 description = "APT/dpkg application manager for Ubuntu"
@@ -60,7 +70,7 @@ assert_is_empty = "allow"
 wildcard_imports = "allow"
 items_after_statements = "allow"
 
-# Debian 打包元数据：由 cargo-deb 读取（./build-deb.sh）。
+# Debian 打包元数据：由 cargo-deb 直接读取；仓库不提供二次封装脚本。
 # `$auto` 让 cargo-deb 从产物的 ELF 依赖自己推导动态库清单，
 # 不再手抄一份 libxcb-* 列表——那份清单每次换 GPUI/系统库版本都会过期。
 [package.metadata.deb]
@@ -68,19 +78,22 @@ name = "debdeck"
 # 清空 Debian 修订号：产物与 Version 都是 0.1.0，不再出现 0.1.0-1。
 # 版本随 Cargo.toml 的 version 单一来源变化，不另设递增计数。
 revision = ""
-maintainer = "DebDeck Maintainers <debdeck@localhost>"
-copyright = "2026, DebDeck Maintainers"
+maintainer = "wangle <wangle@agree.com.cn>"
+copyright = "2026, wangle <wangle@agree.com.cn>"
 section = "admin"
 priority = "optional"
-depends = "apt, pkexec | policykit-1, xdg-utils, ca-certificates, libvulkan1, libegl1, $auto"
+depends = "apt, pkexec | policykit-1, xdg-utils, ca-certificates, libvulkan1, libegl1, hicolor-icon-theme, $auto"
 recommends = "fonts-noto-cjk | fonts-wqy-microhei, libnotify-bin, mesa-vulkan-drivers"
 maintainer-scripts = "debian/"
+changelog = "debian/changelog"
 # 许可证随包一起装到 /usr/share/doc 下，供用户就地查阅
 license-file = "LICENSE"
 extended-description = """
-DebDeck 是一款 Ubuntu 原生的 APT/dpkg 应用管理器。
-支持浏览已安装与软件源中的软件包、按名称/包名/拼音搜索，
-打开、卸载与保持版本，以及在线获取 .deb 安装包和从已安装文件离线重建安装包。"""
+DebDeck is a native Ubuntu application manager for APT and dpkg packages. It
+combines installed and repository packages in one searchable catalog, supports
+opening and uninstalling applications, holding package versions, downloading
+.deb files, rebuilding packages from installed files, and installing local
+.deb files through a policy-controlled authorization flow."""
 assets = [
     ["target/release/debdeck", "usr/bin/debdeck", "755"],
     ["packaging/debdeck.desktop", "usr/share/applications/debdeck.desktop", "644"],
@@ -95,4 +108,6 @@ assets = [
     ["packaging/icons/256x256.png", "usr/share/icons/hicolor/256x256/apps/debdeck.png", "644"],
     ["packaging/icons/512x512.png", "usr/share/icons/hicolor/512x512/apps/debdeck.png", "644"],
     ["packaging/icons/256x256.png", "usr/share/pixmaps/debdeck.png", "644"],
+    ["README.md", "usr/share/doc/debdeck/README.md", "644"],
+    ["README_zh-CN.md", "usr/share/doc/debdeck/README_zh-CN.md", "644"],
 ]

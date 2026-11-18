@@ -1,0 +1,9 @@
+debdeck (0.1.0) unstable; urgency=medium
+
+  * Initial public release.
+  * Add a native APT/dpkg catalog, package details and installed-file browser.
+  * Add application launch, uninstall, version hold, APT package download and
+    offline package rebuild actions.
+  * Add a local .deb installation flow with an in-application polkit agent.
+
+ -- wangle <wangle@agree.com.cn>  Wed, 18 Nov 2026 00:00:00 +0800

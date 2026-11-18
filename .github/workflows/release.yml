@@ -1,0 +1,200 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Validate release version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+      - name: Resolve and validate version
+        id: meta
+        shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${TAG_INPUT:-${GITHUB_REF_NAME}}"
+
+          if [[ "$TAG" != v* ]]; then
+            echo "::error::Release tag must start with v, got: $TAG"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag is not a valid semantic version: $TAG"
+            exit 1
+          fi
+
+          PACKAGE_VERSION="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "$PACKAGE_VERSION" != "$VERSION" ]; then
+            echo "::error::Tag version $VERSION does not match Cargo.toml version $PACKAGE_VERSION"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-deb:
+    name: Build DEB (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install native and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            desktop-file-utils \
+            file \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libdbus-1-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked --version 3.8.0
+
+      - name: Build Debian package with cargo-deb
+        run: cargo deb --locked --target ${{ matrix.target }}
+
+      - name: Validate and stage release artifacts
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          DEB="$(find target -path '*/debian/debdeck_*.deb' -type f -print -quit)"
+          if [ -z "$DEB" ]; then
+            echo "::error::cargo-deb did not produce a package for $ARCH"
+            exit 1
+          fi
+
+          desktop-file-validate packaging/debdeck.desktop
+          CONTENTS="$(dpkg-deb -c "$DEB")"
+          REQUIRED_PATHS=(
+            ./usr/bin/debdeck
+            ./usr/share/applications/debdeck.desktop
+            ./usr/share/icons/hicolor/scalable/apps/debdeck.svg
+            ./usr/share/icons/hicolor/256x256/apps/debdeck.png
+            ./usr/share/pixmaps/debdeck.png
+            ./usr/share/polkit-1/rules.d/49-debdeck.rules
+            ./usr/share/doc/debdeck/changelog.Debian.gz
+            ./usr/share/doc/debdeck/README.md
+          )
+          for path in "${REQUIRED_PATHS[@]}"; do
+            if ! grep -q "$path" <<<"$CONTENTS"; then
+              echo "::error::Package is missing $path"
+              exit 1
+            fi
+          done
+
+          mkdir -p dist
+          OUTPUT="dist/debdeck_${VERSION}_linux_${ARCH}.deb"
+          cp "$DEB" "$OUTPUT"
+          ls -lh dist
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}-deb
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build-deb]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+
+      - name: Generate combined checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-files
+          sha256sum *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: DebDeck v${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -27,14 +27,10 @@ pub(crate) fn show(
     let border = cx.theme().border;
     let background = cx.theme().status_bar;
 
-    let stats = div()
-        .text_xs()
-        .text_color(muted)
-        .truncate()
-        .child(format!(
-            "共 {} 个应用 · 已安装 {} · 界面 {} · 保持 {} · 可更新 {} · 显示 {visible}",
-            counts.total, counts.installed, counts.gui, counts.held, counts.upgradable,
-        ));
+    let stats = div().text_xs().text_color(muted).truncate().child(format!(
+        "共 {} 个应用 · 已安装 {} · 界面 {} · 保持 {} · 可更新 {} · 显示 {visible}",
+        counts.total, counts.installed, counts.gui, counts.held, counts.upgradable,
+    ));
 
     let right = h_flex()
         .gap(px(8.0))

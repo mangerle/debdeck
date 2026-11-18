@@ -12,8 +12,8 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::{
     AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div,
-    img, px,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window,
+    div, img, px,
 };
 
 use crate::app::{Action, Catalog, DebDeckApp, DetailTab, IconCache, ListView};

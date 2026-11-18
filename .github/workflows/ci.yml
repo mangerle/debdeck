@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Format, Clippy and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            file \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libdbus-1-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Check all targets
+        run: cargo check --locked --all-targets
+
+      - name: Verify minimum supported Rust version
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          cargo +1.95.0 check --locked --all-targets
+
+  package:
+    name: Build and validate Debian package
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: debian-package
+
+      - name: Install native and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            desktop-file-utils \
+            file \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libdbus-1-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked --version 3.8.0
+
+      - name: Build Debian package with cargo-deb
+        run: cargo deb --locked
+
+      - name: Validate package metadata and contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEB="$(find target/debian -maxdepth 1 -name 'debdeck_*.deb' -print -quit)"
+          if [ -z "$DEB" ]; then
+            echo "::error::cargo-deb did not produce a package"
+            exit 1
+          fi
+
+          test "$(dpkg-deb -f "$DEB" Package)" = "debdeck"
+          test "$(dpkg-deb -f "$DEB" Version)" = "$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          desktop-file-validate packaging/debdeck.desktop
+
+          CONTENTS="$(dpkg-deb -c "$DEB")"
+          REQUIRED_PATHS=(
+            ./usr/bin/debdeck
+            ./usr/share/applications/debdeck.desktop
+            ./usr/share/icons/hicolor/scalable/apps/debdeck.svg
+            ./usr/share/icons/hicolor/256x256/apps/debdeck.png
+            ./usr/share/pixmaps/debdeck.png
+            ./usr/share/polkit-1/rules.d/49-debdeck.rules
+            ./usr/share/doc/debdeck/changelog.Debian.gz
+            ./usr/share/doc/debdeck/README.md
+          )
+          for path in "${REQUIRED_PATHS[@]}"; do
+            if ! grep -q "$path" <<<"$CONTENTS"; then
+              echo "::error::Package is missing $path"
+              exit 1
+            fi
+          done
+
+          dpkg-deb -I "$DEB"
+
+      - name: Upload Debian package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debdeck-deb-amd64
+          path: target/debian/debdeck_*.deb
+          if-no-files-found: error
+          retention-days: 14

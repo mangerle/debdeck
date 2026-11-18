@@ -69,10 +69,7 @@ pub(crate) fn show(
     // 内容与按钮分开返回：按钮栏钉在窗口底部，内容单独滚动。
     let (content, actions): (AnyElement, Option<AnyElement>) = match file {
         Ok(file) => match phase {
-            Phase::Confirm => (
-                confirm(&file, cx),
-                Some(confirm_actions(app, cx)),
-            ),
+            Phase::Confirm => (confirm(&file, cx), Some(confirm_actions(app, cx))),
             Phase::Authorizing => (
                 running(&file, "正在请求管理员授权…", note.as_deref(), cx),
                 None,
@@ -133,9 +130,10 @@ pub(crate) fn show(
                         .pt(px(CONTENT_PADDING))
                         .child(content),
                 )
-                .children(actions.map(|actions| {
-                    div().px(px(16.0)).pb(px(CONTENT_PADDING)).child(actions)
-                })),
+                .children(
+                    actions
+                        .map(|actions| div().px(px(16.0)).pb(px(CONTENT_PADDING)).child(actions)),
+                ),
         )
         .into_any_element()
 }
@@ -160,7 +158,11 @@ fn header(subtitle: &str, window: &mut Window, cx: &mut Context<InstallApp>) -> 
         .border_b_1()
         .border_color(theme.title_bar_border)
         .bg(theme.title_bar)
-        .child(Icon::new(IconName::Package).small().text_color(theme.primary))
+        .child(
+            Icon::new(IconName::Package)
+                .small()
+                .text_color(theme.primary),
+        )
         .child(
             div()
                 .text_sm()
@@ -641,11 +643,7 @@ fn close_actions(cx: &mut Context<InstallApp>) -> AnyElement {
 
 /// 底部操作栏：右对齐的按钮行。
 fn action_bar() -> Div {
-    h_flex()
-        .w_full()
-        .justify_end()
-        .items_center()
-        .gap(px(8.0))
+    h_flex().w_full().justify_end().items_center().gap(px(8.0))
 }
 
 /// 彩色小提示条。
