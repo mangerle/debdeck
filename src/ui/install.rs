@@ -64,7 +64,7 @@ pub(crate) fn show(
         Err(_) => "安装软件包".to_string(),
     };
 
-    let title_bar = header(&subtitle, window, cx);
+    let title_bar = header(&subtitle, app.app_icon(), window, cx);
 
     // 内容与按钮分开返回：按钮栏钉在窗口底部，内容单独滚动。
     let (content, actions): (AnyElement, Option<AnyElement>) = match file {
@@ -142,7 +142,12 @@ pub(crate) fn show(
 ///
 /// 不画最小化 / 最大化 / 关闭：安装窗口只有「取消 / 确认」两个动作，
 /// 多余的窗口按钮只会挤掉本来就不宽裕的内容区。
-fn header(subtitle: &str, window: &mut Window, cx: &mut Context<InstallApp>) -> AnyElement {
+fn header(
+    subtitle: &str,
+    app_icon: Option<std::sync::Arc<gpui_kit::RenderImage>>,
+    window: &mut Window,
+    cx: &mut Context<InstallApp>,
+) -> AnyElement {
     // 按下鼠标只记下意图，等指针真的移动了再发起窗口移动 —— 单纯点一下
     // 标题条不该被当成拖动。做法与 gpui-kit 的 TitleBar 一致。
     let state = window.use_state(cx, |_, _| DragState { should_move: false });
@@ -158,11 +163,13 @@ fn header(subtitle: &str, window: &mut Window, cx: &mut Context<InstallApp>) -> 
         .border_b_1()
         .border_color(theme.title_bar_border)
         .bg(theme.title_bar)
-        .child(
-            Icon::new(IconName::Package)
-                .small()
-                .text_color(theme.primary),
-        )
+        .children(app_icon.map(|icon| {
+            img(icon)
+                .w(px(18.0))
+                .h(px(18.0))
+                .rounded(px(4.5))
+                .object_fit(ObjectFit::Cover)
+        }))
         .child(
             div()
                 .text_sm()

@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, Pixels, Render, ScrollHandle, Window, px, size,
+    AppContext as _, Context, Entity, IntoElement, Pixels, Render, RenderImage, ScrollHandle,
+    Window, px, size,
 };
 
 use crate::backend::deb_file;
@@ -48,6 +49,7 @@ pub(crate) enum Phase {
 pub(crate) struct InstallApp {
     file: Result<DebFile, String>,
     phase: Phase,
+    app_icon: Option<Arc<RenderImage>>,
     running: Arc<AtomicBool>,
     password: Entity<InputState>,
     auth_tx: Option<async_channel::Sender<AuthResponse>>,
@@ -82,6 +84,7 @@ impl InstallApp {
         Self {
             file,
             phase: Phase::Confirm,
+            app_icon: crate::ui::app_icon_texture(),
             running: Arc::new(AtomicBool::new(false)),
             password,
             auth_tx: None,
@@ -130,6 +133,10 @@ impl InstallApp {
 
     pub(crate) fn phase(&self) -> &Phase {
         &self.phase
+    }
+
+    pub(crate) fn app_icon(&self) -> Option<Arc<RenderImage>> {
+        self.app_icon.clone()
     }
 
     pub(crate) fn password(&self) -> &Entity<InputState> {
