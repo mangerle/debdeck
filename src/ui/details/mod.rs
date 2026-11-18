@@ -19,7 +19,7 @@ use gpui_kit::{
 use crate::app::{Action, Catalog, DebDeckApp, DetailTab, IconCache, ListView};
 use crate::model::{AppEntry, DesktopEntry, InstalledPackage, MenuEntryState};
 use crate::ui::entry_status;
-use crate::ui::icons::{draw_letter_icon, load_icon_texture};
+use crate::ui::icons::{DETAIL_ICON_SIZE, draw_letter_icon, load_icon_texture};
 
 /// 一次绘制所需、已经从各处取好的数据。
 pub(crate) struct DetailContext<'a> {
@@ -103,8 +103,8 @@ fn show_header(
         .and_then(|desktop| load_icon_texture(icons, &desktop.icon))
     {
         Some(texture) => img(texture)
-            .w(px(44.0))
-            .h(px(44.0))
+            .w(px(DETAIL_ICON_SIZE))
+            .h(px(DETAIL_ICON_SIZE))
             .rounded(px(10.0))
             .object_fit(ObjectFit::Cover)
             .into_any_element(),

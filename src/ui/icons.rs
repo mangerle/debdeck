@@ -9,7 +9,12 @@ use smallvec::smallvec;
 use crate::app::IconCache;
 use crate::backend::desktop::resolve_icon_path;
 
-/// 取图标纹理，未命中缓存时才读盘解码。
+/// 详情页应用图标的逻辑尺寸。
+pub(crate) const DETAIL_ICON_SIZE: f32 = 44.0;
+/// 按 2x 缩放准备详情图标纹理。
+const DETAIL_ICON_TEXTURE_SIZE: u32 = 88;
+
+/// 取图标纹理，未命中缓存时才读盘解码并高质量预缩放。
 ///
 /// 解析失败的图标名也要缓存（`None`），否则每一次重绘都会对同一个不存在的文件
 /// 重试一次 `stat` + 打开。
@@ -25,12 +30,30 @@ pub(crate) fn load_icon_texture(
     }
     let texture = resolve_icon_path(icon_name).and_then(|path| {
         image::open(&path).ok().map(|image| {
-            let frame = image::Frame::new(to_bgra(image.to_rgba8()));
+            let icon = prepare_icon_image(image.to_rgba8(), DETAIL_ICON_TEXTURE_SIZE);
+            let frame = image::Frame::new(to_bgra(icon));
             Arc::new(RenderImage::new(smallvec![frame]))
         })
     });
     cache.insert(icon_name.to_string(), texture.clone());
     texture
+}
+
+/// 将图标缩放到显示尺寸的 2x 纹理，同时保持原始宽高比。
+fn prepare_icon_image(image: image::RgbaImage, max_size: u32) -> image::RgbaImage {
+    let (width, height) = image.dimensions();
+    let longest = width.max(height);
+    if longest <= max_size {
+        return image;
+    }
+
+    let scaled_width =
+        (u64::from(width) * u64::from(max_size) + u64::from(longest) / 2) / u64::from(longest);
+    let scaled_height =
+        (u64::from(height) * u64::from(max_size) + u64::from(longest) / 2) / u64::from(longest);
+    let width = u32::try_from(scaled_width).unwrap_or(1).max(1);
+    let height = u32::try_from(scaled_height).unwrap_or(1).max(1);
+    image::imageops::resize(&image, width, height, image::imageops::FilterType::Lanczos3)
 }
 
 /// GPUI 的 `RenderImage` 按 BGRA 上传纹理；`image` crate 解码得到的是 RGBA。
@@ -49,8 +72,8 @@ pub(crate) fn draw_letter_icon(name: &str, theme: &Theme) -> impl IntoElement {
         .next()
         .map_or_else(|| "?".to_string(), |ch| ch.to_uppercase().to_string());
     div()
-        .w(px(44.0))
-        .h(px(44.0))
+        .w(px(DETAIL_ICON_SIZE))
+        .h(px(DETAIL_ICON_SIZE))
         .rounded(px(10.0))
         .bg(theme.primary)
         .text_color(theme.primary_foreground)
@@ -107,5 +130,19 @@ mod tests {
     #[test]
     fn embedded_app_icon_decodes() {
         assert!(app_icon_texture().is_some());
+    }
+
+    #[test]
+    fn prepares_detail_icon_without_distorting_aspect_ratio() {
+        let image = image::RgbaImage::from_pixel(128, 64, image::Rgba([1, 2, 3, 4]));
+        let prepared = prepare_icon_image(image, DETAIL_ICON_TEXTURE_SIZE);
+        assert_eq!(prepared.dimensions(), (88, 44));
+    }
+
+    #[test]
+    fn leaves_small_detail_icon_at_original_size() {
+        let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([1, 2, 3, 4]));
+        let prepared = prepare_icon_image(image, DETAIL_ICON_TEXTURE_SIZE);
+        assert_eq!(prepared.dimensions(), (32, 32));
     }
 }
