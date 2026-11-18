@@ -294,6 +294,8 @@ pub(crate) struct DebDeckApp {
     pub(crate) list: ListView,
     pub(crate) dialogs: Dialogs,
     pub(crate) icons: IconCache,
+    /// 标题栏自绘图标，启动时解码一次，避免每帧读取 PNG。
+    pub(crate) app_icon: Option<Arc<RenderImage>>,
     pub(crate) search_input: Entity<InputState>,
     pub(crate) files_input: Entity<InputState>,
     pub(crate) sort_select: SortSelect,

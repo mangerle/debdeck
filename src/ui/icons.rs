@@ -62,14 +62,24 @@ pub(crate) fn draw_letter_icon(name: &str, theme: &Theme) -> impl IntoElement {
         .child(letter)
 }
 
+/// 随二进制内嵌的应用图标，不依赖安装路径。
+fn embedded_icon() -> Option<image::RgbaImage> {
+    image::load_from_memory(include_bytes!("../../assets/icon.png"))
+        .ok()
+        .map(|image| image.to_rgba8())
+}
+
+/// 标题栏使用的 GPUI 图像纹理；启动时只需解码一次。
+pub(crate) fn app_icon_texture() -> Option<Arc<RenderImage>> {
+    let frame = image::Frame::new(to_bgra(embedded_icon()?));
+    Some(Arc::new(RenderImage::new(smallvec![frame])))
+}
+
 /// 窗口图标：随二进制内嵌，不依赖安装路径。
 ///
 /// GPUI 只在 X11 上使用它；Wayland 由 `app_id` 和 `.desktop` 文件的图标接管。
 pub fn window_icon() -> Option<Arc<image::RgbaImage>> {
-    let image = image::load_from_memory(include_bytes!("../../assets/icon.png"))
-        .ok()?
-        .to_rgba8();
-    Some(Arc::new(image))
+    embedded_icon().map(Arc::new)
 }
 
 #[cfg(test)]
@@ -80,5 +90,10 @@ mod tests {
     fn converts_rgba_pixels_to_the_bgra_layout_gpui_expects() {
         let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 4]));
         assert_eq!(to_bgra(image).get_pixel(0, 0).0, [3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn embedded_app_icon_decodes() {
+        assert!(app_icon_texture().is_some());
     }
 }

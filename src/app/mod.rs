@@ -8,8 +8,9 @@
 //!
 //! # 与 `ui` 的唯一 upward 引用
 //!
-//! [`run`] 会调用 `crate::ui::window_icon` 读取窗口图标 —— 这是启动期的一次性资源，
-//! 不参与每帧绘制。绘制期的依赖方向仍然是单向的 `ui → app`。
+//! [`run`] 与 [`DebDeckApp::new`] 会调用 `crate::ui` 读取窗口和标题栏图标 ——
+//! 这是启动期的一次性资源，不参与每帧绘制。绘制期的依赖方向仍然是单向的
+//! `ui → app`。
 
 mod actions;
 mod catalog;
@@ -272,6 +273,7 @@ impl DebDeckApp {
             list: ListView::new(),
             dialogs: Dialogs::new(),
             icons: IconCache::new(),
+            app_icon: crate::ui::app_icon_texture(),
             search_input,
             files_input,
             sort_select,
@@ -396,17 +398,18 @@ impl Render for DebDeckApp {
             h_flex()
                 .items_center()
                 .gap(px(8.0))
+                .children(self.app_icon.clone().map(|icon| {
+                    img(icon)
+                        .w(px(18.0))
+                        .h(px(18.0))
+                        .rounded(px(4.5))
+                        .object_fit(ObjectFit::Cover)
+                }))
                 .child(
                     div()
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(APP_NAME),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Ubuntu 应用管理器"),
                 ),
         );
 

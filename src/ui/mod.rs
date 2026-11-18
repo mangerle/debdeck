@@ -21,6 +21,7 @@ pub mod toolbar;
 use gpui_kit::component::{h_resizable, resizable_panel, v_flex};
 use gpui_kit::{Context, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
 
+pub(crate) use icons::app_icon_texture;
 pub use icons::window_icon;
 pub(crate) use notices::{show_loading, show_toast};
 

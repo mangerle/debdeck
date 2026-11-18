@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DebDeck - 原生 Ubuntu 软件包管理器</title>
+<meta name="description" content="DebDeck 是基于 Rust 与 GPUI 构建的 Ubuntu 原生 APT/dpkg 应用管理器：统一浏览已安装与软件源应用，查看文件、启动卸载、下载安装包并在离线时重建 .deb。">
+<meta name="theme-color" content="#130c08">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://mangerle.github.io/debdeck/">
+<link rel="icon" href="debdeck.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:title" content="DebDeck - 原生 Ubuntu 软件包管理器">
+<meta property="og:description" content="把 APT 与 dpkg 收进一张原生牌桌：搜索、查看、启动、卸载、下载与离线重建安装包。">
+<meta property="og:url" content="https://mangerle.github.io/debdeck/">
+<meta property="og:image" content="https://mangerle.github.io/debdeck/assets/debdeck-social.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="DebDeck - 原生 Ubuntu 软件包管理器">
+<meta name="twitter:description" content="Rust + GPUI 原生渲染，APT/dpkg 应用目录、文件清单、安装流程与离线打包集中在一个窗口。">
+<meta name="twitter:image" content="https://mangerle.github.io/debdeck/assets/debdeck-social.png">
+<script>document.documentElement.classList.add('js');</script>
+<style>
+@font-face{font-family:"DebDeck Sans";src:local("Inter"),local("Manrope"),local("Noto Sans SC"),local("PingFang SC");font-style:normal;font-weight:100 900;font-display:swap}
+:root{
+  --bg:#130c08;--surface-1:#1a110c;--surface-2:#23150e;--surface-3:#321c11;--surface-4:#432515;
+  --text:#fff8f2;--muted:#bca597;--soft:#ecd9ce;--line:rgba(255,203,158,.15);
+  --accent:#ff7a1a;--accent-strong:#ffb264;--accent-ink:#2a1004;--cream:#ffe8ce;--gold:#ffd166;--cyan:#78d8e8;
+  --success:#65d6a6;--warning:#f8c15c;--danger:#fb7185;--radius-sm:9px;--radius-md:14px;--radius-lg:20px;--radius-xl:28px;
+  --curve:cubic-bezier(.22,1,.36,1);--shadow:0 34px 90px -38px rgba(0,0,0,.95),inset 0 1px 0 rgba(255,255,255,.06)
+}
+*{box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{
+  margin:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;
+  color:var(--text);background:var(--bg);
+  font:400 16px/1.5 "DebDeck Sans","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility
+}
+body::before{
+  content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background:
+    radial-gradient(70% 58% at 53% -12%,rgba(255,112,26,.24),transparent 68%),
+    radial-gradient(38% 33% at 96% 12%,rgba(206,58,7,.17),transparent 72%),
+    radial-gradient(32% 27% at 9% 80%,rgba(255,209,102,.065),transparent 76%),
+    radial-gradient(25% 25% at 47% 56%,rgba(120,216,232,.028),transparent 78%)
+}
+body::after{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.16;
+  background-image:linear-gradient(rgba(255,194,142,.12) 1px,transparent 1px),linear-gradient(90deg,rgba(255,194,142,.12) 1px,transparent 1px);
+  background-size:56px 56px;-webkit-mask-image:radial-gradient(82% 66% at 50% 8%,#000,transparent 88%);mask-image:radial-gradient(82% 66% at 50% 8%,#000,transparent 88%)
+}
+a{color:inherit;text-decoration:none}
+button{font:inherit}
+img{display:block;max-width:100%;height:auto;object-fit:contain}
+button,a{-webkit-tap-highlight-color:transparent}
+::selection{background:var(--accent);color:var(--accent-ink)}
+.skip-link{position:fixed;left:16px;top:-80px;z-index:100;padding:8px 12px;border-radius:var(--radius-sm);background:var(--accent);color:var(--accent-ink)}
+.skip-link:focus{top:12px}
+.container{width:min(1180px,calc(100% - 40px));margin-inline:auto}
+.icon{width:24px;height:24px;fill:currentColor;flex:none}
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.heading-1{font-size:56px;line-height:1.05;font-weight:680;letter-spacing:-.05em}
+.heading-2{font-size:42px;line-height:1.1;font-weight:670;letter-spacing:-.045em}
+.heading-3{font-size:34px;line-height:1.14;font-weight:660;letter-spacing:-.04em}
+.heading-4{font-size:20px;line-height:1.35;font-weight:650;letter-spacing:-.02em}
+.body-lg{font-size:17px;line-height:1.75;color:var(--muted)}
+.body-md{font-size:15px;line-height:1.7;color:var(--muted)}
+.body-sm{font-size:13px;line-height:1.65;color:var(--muted)}
+.caption{font-size:12px;line-height:1.45;font-weight:500;color:var(--muted)}
+.kicker{display:inline-flex;align-items:center;gap:8px;color:var(--accent-strong);font-size:12px;line-height:16px;font-weight:680;letter-spacing:.045em}
+.kicker::before{content:"";width:7px;height:7px;border-radius:999px;background:currentColor;box-shadow:0 0 16px currentColor}
+.gradient-text{display:inline;background:linear-gradient(100deg,#fff 4%,#ffd7ae 42%,#ff9c46 68%,#ffd166);-webkit-background-clip:text;background-clip:text;color:transparent}
+.button{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:44px;padding:0 18px;border:1px solid transparent;border-radius:10px;font-size:13px;line-height:1;font-weight:650;transition:transform .2s var(--curve),background-color .2s,border-color .2s,box-shadow .2s;cursor:pointer}
+.button:hover{transform:translateY(-1px)}
+.button-primary{background:linear-gradient(145deg,#ff8a2f,#ef6412);color:#fff;box-shadow:0 10px 28px -14px rgba(255,105,20,.82),inset 0 1px 0 rgba(255,255,255,.2)}
+.button-primary:hover{background:linear-gradient(145deg,#ffa14f,#f36c14);box-shadow:0 14px 32px -14px rgba(255,105,20,.92),inset 0 1px 0 rgba(255,255,255,.24)}
+.button-secondary{border-color:var(--line);background:rgba(255,255,255,.035);color:var(--soft)}
+.button-secondary:hover{border-color:rgba(255,178,100,.32);background:rgba(255,122,26,.08);color:var(--text)}
+.button .icon{width:18px;height:18px}
+.site-header{position:relative;z-index:30;padding-top:10px}
+.nav-bar{height:54px;display:flex;align-items:center;gap:25px;padding:0 14px 0 16px;border:1px solid var(--line);border-radius:16px;background:rgba(19,12,8,.74);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);box-shadow:0 12px 32px -26px #000}
+.brand{display:flex;align-items:center;gap:10px;flex:none;font-size:15px;font-weight:680;letter-spacing:-.02em}
+.brand img{width:34px;height:34px}
+.nav-links{display:flex;align-items:center;gap:23px;margin-left:auto}
+.nav-link{position:relative;padding:6px 0;border:0;background:none;color:var(--muted);font-size:12px;line-height:18px;cursor:pointer;transition:color .2s}
+.nav-link:hover{color:var(--text)}
+.nav-link[aria-current="page"]{color:var(--text)}
+.nav-link[aria-current="page"]::after{content:"";position:absolute;left:50%;bottom:-3px;width:18px;height:2px;border-radius:2px;background:var(--accent);transform:translateX(-50%)}
+.nav-actions{display:flex;align-items:center;gap:3px;margin-left:12px}
+.nav-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:9px;color:var(--muted);transition:color .2s,background-color .2s}
+.nav-icon:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.nav-icon .icon{width:20px;height:20px}
+.menu-toggle{display:none;position:relative;place-items:center;width:38px;height:38px;padding:0;border:0;border-radius:9px;background:transparent;color:var(--text);cursor:pointer}
+.menu-toggle span{position:absolute;width:19px;height:2px;background:currentColor;transition:transform .35s var(--curve),opacity .2s}
+.menu-toggle span:first-child{transform:translateY(-6px)}
+.menu-toggle span:last-child{transform:translateY(6px)}
+body.menu-open .menu-toggle span:first-child{transform:rotate(45deg)}
+body.menu-open .menu-toggle span:nth-child(2){opacity:0}
+body.menu-open .menu-toggle span:last-child{transform:rotate(-45deg)}
+.mobile-menu{position:fixed;inset:0;z-index:45;display:none;padding:96px 24px 32px;background:rgba(19,12,8,.985);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);opacity:0;visibility:hidden;transition:opacity .35s,visibility .35s}
+.mobile-menu button{display:block;width:100%;padding:13px 0;border:0;background:none;color:var(--muted);text-align:left;font-size:27px;line-height:1.35;font-weight:600;opacity:0;transform:translateY(18px);transition:opacity .4s var(--curve),transform .4s var(--curve),color .2s;transition-delay:calc(var(--i) * 42ms)}
+body.menu-open .mobile-menu{opacity:1;visibility:visible}
+body.menu-open .mobile-menu button{opacity:1;transform:none}
+.deck{position:relative;min-height:0;overflow:hidden;isolation:isolate;outline:none}
+.slide{position:absolute;inset:0;display:block;padding:8px 0 20px;overflow-y:auto;overscroll-behavior:contain;opacity:0;visibility:hidden;transform:translateY(32px);pointer-events:none;transition:opacity .45s var(--curve),transform .6s var(--curve),visibility .45s;scrollbar-width:thin;scrollbar-color:var(--surface-4) transparent}
+.slide.is-before{transform:translateY(-32px)}
+.slide.is-active{opacity:1;visibility:visible;transform:none;pointer-events:auto}
+.slide-inner{width:min(1180px,calc(100% - 40px));min-height:100%;margin-inline:auto;display:flex;flex-direction:column;justify-content:center}
+.hero-layout{display:grid;grid-template-columns:minmax(0,.88fr) minmax(500px,1.12fr);grid-template-areas:"copy visual" "stats stats";align-items:center;gap:24px 52px}
+.hero-copy{grid-area:copy;max-width:570px}
+.hero-copy h1{max-width:590px;margin:17px 0 0;text-wrap:balance}
+.hero-copy .body-lg{max-width:560px;margin:17px 0 0}
+.hero-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:23px}
+.proof-line{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:17px;color:var(--muted);font-size:13px;line-height:20px}
+.proof-item{display:flex;align-items:center;gap:7px}
+.proof-item .icon{width:16px;height:16px;color:var(--accent-strong)}
+.stat-strip{grid-area:stats;display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:18px;background:rgba(26,17,12,.82);box-shadow:inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}
+.stat{padding:12px 18px;border-right:1px solid var(--line)}
+.stat:last-child{border-right:0}
+.stat strong{display:block;font-size:20px;line-height:24px;letter-spacing:-.035em;color:var(--text)}
+.stat span{display:block;margin-top:3px;font-size:11px;line-height:16px;color:var(--muted)}
+.hero-visual{grid-area:visual;padding:7px;border:1px solid rgba(255,178,100,.19);border-radius:24px;background:rgba(35,21,14,.75);box-shadow:var(--shadow)}
+.app-window{overflow:hidden;border:1px solid rgba(255,178,100,.2);border-radius:18px;background:linear-gradient(150deg,#25150d,#180f0a);box-shadow:0 38px 90px -38px rgba(0,0,0,.98),inset 0 1px 0 rgba(255,255,255,.06)}
+.app-titlebar{height:34px;display:flex;align-items:center;gap:12px;padding:0 11px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.018)}
+.traffic{display:flex;gap:6px}
+.traffic i{width:7px;height:7px;border-radius:50%;background:#fb7185}.traffic i:nth-child(2){background:#fbbf24}.traffic i:nth-child(3){background:#34d399}
+.app-title{font-size:9px;color:var(--muted);letter-spacing:.045em}
+.app-title b{color:#f3e2d5;font-weight:600}
+.app-body{display:grid;grid-template-columns:156px minmax(0,1fr);min-height:346px}
+.app-sidebar{border-right:1px solid var(--line);background:rgba(9,5,3,.22);padding:9px 8px;overflow:hidden}
+.sidebar-brand{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:#f8e9de;font-size:10px;font-weight:650}
+.mini-logo{display:flex;align-items:center;gap:6px}.mini-logo img{width:17px;height:17px}.sidebar-plus{width:17px;height:17px;display:grid;place-items:center;border:1px solid var(--line);border-radius:5px;color:var(--muted);font-size:10px}
+.search-box{display:flex;align-items:center;gap:5px;height:25px;padding:0 7px;border:1px solid rgba(255,178,100,.24);border-radius:6px;background:#160d08;color:#a98f7f;font-size:8px}
+.search-box .icon{width:11px;height:11px;color:var(--accent-strong)}
+.search-box kbd{margin-left:auto;padding:1px 3px;border:1px solid var(--line);border-radius:3px;color:#81695c;font:7px "SFMono-Regular",Consolas,monospace}
+.filter-pills{display:flex;gap:3px;margin:7px 0 9px}
+.filter-pill{padding:3px 6px;border-radius:999px;background:rgba(255,255,255,.035);color:#947b6e;font-size:7px}
+.filter-pill.active{background:var(--accent);color:#fff}
+.list-label{display:flex;justify-content:space-between;margin:7px 2px 5px;color:#80685c;font-size:7px;letter-spacing:.06em}
+.pkg-row{display:grid;grid-template-columns:18px minmax(0,1fr) 5px;align-items:center;gap:7px;height:34px;padding:0 6px;border-radius:6px;color:#d5c1b3}
+.pkg-row.active{background:rgba(255,122,26,.13);box-shadow:inset 2px 0 0 var(--accent)}
+.pkg-icon{display:grid;place-items:center;width:18px;height:18px;border-radius:5px;background:linear-gradient(145deg,#f59e0b,#b45309);color:#fff;font-size:8px;font-weight:750}
+.pkg-icon.green{background:linear-gradient(145deg,#69d29b,#146b48)}.pkg-icon.blue{background:linear-gradient(145deg,#70c8f4,#275a9c)}.pkg-icon.purple{background:linear-gradient(145deg,#c09af0,#6842a5)}.pkg-icon.cyan{background:linear-gradient(145deg,#6ed7e7,#176474)}
+.pkg-name{min-width:0}.pkg-name strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:8px;font-weight:620}.pkg-name span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px;color:#846e61;font:7px "SFMono-Regular",Consolas,monospace}
+.state-dot{width:5px;height:5px;border-radius:50%;background:var(--success)}
+.state-dot.update{background:var(--warning)}.state-dot.idle{background:#705a4e}
+.app-main{min-width:0;display:flex;flex-direction:column;background:#150d09}
+.detail-head{display:flex;align-items:center;gap:9px;padding:12px 12px 10px;border-bottom:1px solid var(--line)}
+.detail-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:9px;background:linear-gradient(145deg,#f59e0b,#a63b08);color:#fff;font-size:13px;font-weight:750;box-shadow:inset 0 1px 0 rgba(255,255,255,.2)}
+.detail-title{min-width:0;flex:1}.detail-title h3{margin:0;font-size:12px;line-height:16px;font-weight:650}.detail-title p{margin:2px 0 0;color:#927a6d;font:8px "SFMono-Regular",Consolas,monospace}
+.status-badge{padding:3px 7px;border-radius:999px;background:rgba(101,214,166,.14);color:var(--success);font-size:7px;font-weight:600}
+.action-row{display:flex;gap:5px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.mini-button{display:inline-flex;align-items:center;justify-content:center;height:21px;padding:0 8px;border:1px solid var(--line);border-radius:5px;background:rgba(255,255,255,.025);color:#c7b1a3;font-size:7px}
+.mini-button.primary{border-color:transparent;background:var(--accent);color:#fff}
+.detail-tabs{display:flex;gap:14px;height:27px;align-items:center;padding:0 12px;border-bottom:1px solid var(--line);color:#886f62;font-size:7px}
+.detail-tabs strong{position:relative;height:100%;display:flex;align-items:center;color:#f1ded1;font-weight:600}
+.detail-tabs strong::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:var(--accent)}
+.detail-body{padding:10px 12px;flex:1}
+.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px}
+.meta-cell{padding:6px 7px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.018)}
+.meta-cell span{display:block;color:#80695d;font-size:6px}.meta-cell strong{display:block;margin-top:2px;color:#d7c1b3;font-size:7px;font-weight:550}
+.description{margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.018);color:#a98f80;font-size:7px;line-height:1.55}
+.description b{color:#e2cdbf;font-weight:600}
+.detail-footer{display:flex;justify-content:space-between;padding:7px 12px;border-top:1px solid var(--line);color:#7f685c;font-size:7px}
+.detail-footer b{color:#cbb4a6;font-weight:550}
+.section-layout{display:flex;flex-direction:column;gap:22px}
+.section-heading{max-width:810px}
+.section-heading h2{margin:9px 0 0;text-wrap:balance}
+.section-heading p{margin:9px 0 0;max-width:720px}
+.benefit-grid,.platform-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.benefit-card,.platform-card{position:relative;padding:20px;border:1px solid var(--line);border-radius:var(--radius-lg);background:linear-gradient(145deg,rgba(50,28,17,.68),rgba(26,17,12,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}
+.benefit-card::after,.platform-card::after{content:"";position:absolute;width:120px;height:120px;right:-50px;top:-60px;border-radius:50%;background:radial-gradient(circle,rgba(255,122,26,.18),transparent 68%);pointer-events:none}
+.benefit-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:17px}
+.icon-box{display:grid;place-items:center;width:38px;height:38px;border:1px solid rgba(255,178,100,.2);border-radius:11px;background:rgba(255,122,26,.1);color:var(--accent-strong)}
+.icon-box .icon{width:20px;height:20px}
+.icon-box.gold{border-color:rgba(255,209,102,.2);background:rgba(255,209,102,.09);color:var(--gold)}
+.icon-box.cyan{border-color:rgba(120,216,232,.19);background:rgba(120,216,232,.08);color:var(--cyan)}
+.icon-box.green{border-color:rgba(101,214,166,.2);background:rgba(101,214,166,.09);color:var(--success)}
+.index-pill{display:inline-flex;align-items:center;justify-content:center;min-width:31px;height:22px;padding:0 8px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font:600 10px/1 "SFMono-Regular",Consolas,monospace}
+.benefit-card h3,.platform-card h3{margin:0;font-size:18px;line-height:1.32;font-weight:650;letter-spacing:-.02em}
+.benefit-card p,.platform-card p{margin:8px 0 0;font-size:13px;line-height:1.65;color:var(--muted)}
+.card-caption{display:inline-flex;align-items:center;gap:6px;margin-top:14px;color:#e2b78e;font-size:11px;line-height:17px}
+.card-caption::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.feature-layout{display:grid;grid-template-columns:minmax(0,.82fr) minmax(480px,1.18fr);align-items:center;gap:52px}
+.feature-layout.reverse{grid-template-columns:minmax(480px,1.18fr) minmax(0,.82fr)}
+.feature-copy h2{margin:9px 0 0;text-wrap:balance}
+.feature-copy .body-lg{margin:11px 0 0}
+.feature-list{display:grid;gap:9px;margin:19px 0 0;padding:0;list-style:none}
+.feature-list li{display:flex;gap:9px;align-items:flex-start;color:var(--soft);font-size:13px;line-height:1.6}
+.feature-list .icon{width:16px;height:16px;margin-top:2px;color:var(--accent-strong)}
+.media-card{min-width:0;padding:8px;border:1px solid rgba(255,178,100,.17);border-radius:22px;background:linear-gradient(145deg,rgba(50,28,17,.7),rgba(24,15,10,.88));box-shadow:var(--shadow)}
+.media-card-inner{overflow:hidden;border:1px solid var(--line);border-radius:14px;background:#160e09}
+.media-toolbar{height:35px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.018);color:#90776a;font-size:9px}
+.media-toolbar b{color:#e0cabd;font-weight:600;letter-spacing:.03em}
+.media-dots{display:flex;gap:5px}.media-dots i{width:6px;height:6px;border-radius:50%;background:#584235}
+.catalog-demo{display:grid;grid-template-columns:152px minmax(0,1fr);min-height:326px;background:var(--line);gap:1px}
+.catalog-side{background:#170f0a;padding:11px;overflow:hidden}
+.demo-search{display:flex;align-items:center;gap:6px;height:29px;padding:0 8px;border:1px solid rgba(255,178,100,.22);border-radius:7px;background:#100905;color:#b39a8b;font-size:9px}
+.demo-search .icon{width:12px;height:12px;color:var(--accent-strong)}
+.demo-search kbd{margin-left:auto;color:#7f6658;font:7px "SFMono-Regular",Consolas,monospace}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;min-height:23px;padding:3px 8px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.035);color:#cfb5a6;font-size:10px;line-height:15px;white-space:nowrap}
+.chip.active{border-color:rgba(255,178,100,.28);background:rgba(255,122,26,.13);color:var(--accent-strong)}
+.demo-filters{margin-top:8px}
+.demo-filters .chip{min-height:20px;padding:2px 7px;font-size:8px}
+.demo-list{margin-top:10px}
+.demo-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:8px;height:37px;padding:0 7px;border-radius:7px;color:#d7c1b3}
+.demo-row.active{background:rgba(255,122,26,.11);box-shadow:inset 2px 0 0 var(--accent)}
+.demo-row .pkg-icon{width:23px;height:23px;border-radius:6px;font-size:9px}
+.demo-row .pkg-name strong{font-size:9px}.demo-row .pkg-name span{font-size:8px}
+.demo-badge{align-self:center;padding:2px 5px;border-radius:4px;background:rgba(255,209,102,.12);color:var(--warning);font-size:7px}
+.catalog-detail{background:#130c08;min-width:0}
+.demo-package-head{display:flex;gap:10px;align-items:center;padding:14px 14px 11px;border-bottom:1px solid var(--line)}
+.demo-package-head .detail-icon{width:44px;height:44px;font-size:15px}
+.demo-package-head h3{margin:0;font-size:15px}.demo-package-head p{margin:2px 0 0;font-size:8px;color:#92796b}
+.demo-actions{display:flex;gap:5px;padding:8px 14px;border-bottom:1px solid var(--line)}
+.demo-actions .mini-button{height:24px;padding:0 9px;font-size:8px}
+.info-table{padding:12px 14px;display:grid;gap:7px}
+.info-row{display:grid;grid-template-columns:74px minmax(0,1fr);gap:10px;align-items:center;padding-bottom:7px;border-bottom:1px solid rgba(255,203,158,.09);font-size:8px}
+.info-row:last-child{border-bottom:0}.info-row span{color:#80695c}.info-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ddc7b9;font-weight:550}
+.info-row code{color:var(--accent-strong);font:8px "SFMono-Regular",Consolas,monospace}
+.sync-board{display:grid;grid-template-columns:1fr 1fr;gap:1px;min-height:328px;background:var(--line)}
+.sync-panel{padding:15px;background:#160e09}
+.sync-panel h3{margin:0 0 10px;color:#e6d2c4;font-size:11px;font-weight:600}
+.flow-step{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px;border:1px solid var(--line);border-radius:7px;background:rgba(255,255,255,.018);color:#aa9183;font-size:8px;line-height:1.45}
+.flow-step i{display:grid;place-items:center;width:17px;height:17px;border-radius:5px;background:rgba(255,122,26,.12);color:var(--accent-strong);font:600 7px "SFMono-Regular",Consolas,monospace;font-style:normal;flex:none}
+.flow-step strong{display:block;color:#e6d0c2;font-weight:550}.flow-step span{display:block;margin-top:1px;color:#80695c}
+.pipeline{display:flex;align-items:center;justify-content:space-between;gap:5px;margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#100905}
+.pipeline-node{display:grid;place-items:center;width:31px;height:31px;border:1px solid rgba(255,178,100,.2);border-radius:7px;background:rgba(255,122,26,.08);color:var(--accent-strong);font:600 8px "SFMono-Regular",Consolas,monospace}
+.pipeline-arrow{flex:1;height:1px;background:linear-gradient(90deg,rgba(255,178,100,.18),rgba(255,178,100,.55),rgba(255,178,100,.18))}
+.install-stage{display:grid;place-items:center;min-height:332px;padding:18px;background:radial-gradient(circle at 50% 8%,rgba(255,122,26,.09),transparent 42%),#130c08}
+.install-window{width:min(360px,92%);overflow:hidden;border:1px solid rgba(255,178,100,.23);border-radius:12px;background:#1b110c;box-shadow:0 24px 60px -28px #000}
+.install-title{height:32px;display:flex;align-items:center;gap:7px;padding:0 11px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.025);color:#d5bfb1;font-size:9px}
+.install-title img{width:16px;height:16px}.install-title span{color:#987f72}
+.install-content{padding:12px}
+.install-package{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02)}
+.install-package .pkg-icon{width:34px;height:34px;font-size:12px}
+.install-package h3{margin:0;font-size:12px}.install-package p{margin:2px 0 0;color:#9a8173;font-size:8px}
+.install-package .chip{margin-left:auto;min-height:18px;font-size:7px}
+.install-warning{display:flex;gap:8px;margin-top:10px;padding:9px;border:1px solid rgba(248,193,92,.22);border-radius:7px;background:rgba(248,193,92,.065);color:#d6b888;font-size:8px;line-height:1.55}
+.install-warning .icon{width:14px;height:14px;color:var(--warning);flex:none}
+.install-note{margin:10px 1px 0;color:#947b6d;font-size:8px;line-height:1.5}
+.install-actions{display:flex;justify-content:flex-end;gap:6px;padding:0 12px 12px}
+.install-actions .mini-button{height:24px;font-size:8px}
+.install-progress{display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px;border:1px solid var(--line);border-radius:7px;background:#120a06;color:#9e8577;font-size:8px}
+.install-progress i{width:11px;height:11px;border:2px solid rgba(255,178,100,.28);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.install-progress .bar{height:3px;flex:1;border-radius:999px;background:#352015;overflow:hidden}.install-progress .bar b{display:block;width:62%;height:100%;background:linear-gradient(90deg,var(--accent),var(--gold))}
+.download-board{display:grid;grid-template-columns:1.05fr .95fr;gap:1px;min-height:330px;background:var(--line)}
+.download-column{padding:14px;background:#160e09}
+.download-column h3{display:flex;align-items:center;justify-content:space-between;margin:0 0 9px;color:#e5d0c2;font-size:10px;font-weight:600}
+.version-row{display:flex;align-items:center;gap:7px;padding:7px;border-bottom:1px solid rgba(255,203,158,.09);color:#bda497;font-size:8px}
+.version-row:last-child{border-bottom:0}.version-row.selected{background:rgba(255,122,26,.1);border-radius:5px}
+.radio{width:8px;height:8px;border:1px solid #795e50;border-radius:50%;flex:none}.radio.active{border-color:var(--accent);background:var(--accent);box-shadow:0 0 0 2px rgba(255,122,26,.12)}
+.version-row span{flex:1}.version-row code{color:#dfc8ba;font:7px "SFMono-Regular",Consolas,monospace}.version-row em{color:#846c5e;font-style:normal;font-size:7px}
+.queue-card{margin-top:10px;padding:9px;border:1px solid rgba(255,178,100,.17);border-radius:8px;background:rgba(255,122,26,.045)}
+.queue-card strong{display:flex;justify-content:space-between;color:#d8c1b3;font-size:8px;font-weight:550}.queue-card strong em{color:var(--accent-strong);font-style:normal}
+.queue-track{height:4px;margin-top:7px;border-radius:999px;background:#372116;overflow:hidden}.queue-track i{display:block;width:76%;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--accent),var(--gold))}
+.queue-meta{display:flex;justify-content:space-between;margin-top:4px;color:#80685b;font-size:7px}
+.rebuild-card{padding:10px;border:1px solid var(--line);border-radius:8px;background:#110905}
+.rebuild-steps{display:grid;gap:6px;margin-top:8px}
+.rebuild-step{display:flex;align-items:center;gap:7px;font-size:8px;color:#a58c7e}
+.rebuild-step i{display:grid;place-items:center;width:15px;height:15px;border-radius:4px;background:rgba(101,214,166,.12);color:var(--success);font-style:normal;font-size:7px}
+.rebuild-step:last-child i{background:rgba(255,122,26,.13);color:var(--accent-strong)}
+.platform-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.platform-icon{display:grid;place-items:center;width:38px;height:38px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.035);color:var(--accent-strong)}
+.platform-icon .icon{width:21px;height:21px}
+.platform-card .chips{margin-top:14px}
+.platform-note{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:rgba(26,17,12,.65);color:var(--muted);font-size:12px}
+.download-layout{display:grid;grid-template-columns:minmax(0,1.02fr) minmax(420px,.98fr);gap:42px;align-items:center}
+.cta-panel{padding:28px;border:1px solid rgba(255,178,100,.21);border-radius:var(--radius-xl);background:radial-gradient(circle at 94% 4%,rgba(255,122,26,.18),transparent 36%),linear-gradient(145deg,rgba(50,28,17,.82),rgba(22,14,9,.92));box-shadow:var(--shadow)}
+.cta-panel h2{margin:12px 0 0;text-wrap:balance}
+.cta-panel p{max-width:560px;margin:12px 0 0;color:var(--muted);font-size:14px;line-height:1.7}
+.cta-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+.cta-meta{display:flex;flex-wrap:wrap;gap:10px 20px;margin-top:17px;color:#a58b7d;font-size:11px}
+.cta-meta span{display:flex;align-items:center;gap:6px}.cta-meta .icon{width:14px;height:14px;color:var(--accent-strong)}
+.faq-list{display:grid;gap:8px}
+.faq-list details{border:1px solid var(--line);border-radius:13px;background:rgba(26,17,12,.72);overflow:hidden}
+.faq-list summary{position:relative;padding:14px 42px 14px 16px;color:#ead8cc;font-size:13px;line-height:1.45;font-weight:600;cursor:pointer;list-style:none}
+.faq-list summary::-webkit-details-marker{display:none}
+.faq-list summary::after{content:"";position:absolute;right:17px;top:19px;width:7px;height:7px;border-right:1px solid var(--muted);border-bottom:1px solid var(--muted);transform:rotate(45deg);transition:transform .2s}
+.faq-list details[open] summary::after{transform:rotate(225deg);top:22px}
+.faq-list p{margin:0;padding:0 16px 15px;color:var(--muted);font-size:12px;line-height:1.65}
+.site-footer{position:relative;z-index:20;padding:6px 0;background:linear-gradient(to top,var(--bg),rgba(19,12,8,.96))}
+.progress-rail{position:absolute;left:0;right:0;top:0;height:1px;background:rgba(255,255,255,.055)}
+.progress-bar{display:block;width:100%;height:100%;background:linear-gradient(90deg,var(--accent),var(--gold));transform:scaleX(.125);transform-origin:left;transition:transform .45s var(--curve)}
+.footer-inner{height:38px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.footer-brand{font-size:10px;letter-spacing:.03em;color:#8b7164}
+.footer-hint{font-size:10px;color:#7d6659}
+.deck-controls{display:flex;align-items:center;gap:9px}
+.icon-button{display:grid;place-items:center;width:31px;height:31px;padding:0;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.035);color:#c3a998;cursor:pointer;transition:background-color .2s,color .2s,border-color .2s}
+.icon-button:hover:not(:disabled){border-color:rgba(255,178,100,.32);background:rgba(255,122,26,.1);color:var(--text)}
+.icon-button:disabled{opacity:.28;cursor:not-allowed}
+.icon-button .icon{width:16px;height:16px}.icon-button.prev .icon{transform:rotate(180deg)}
+.slide-counter{min-width:70px;text-align:center;font:10px "SFMono-Regular",Consolas,monospace;color:#856d60}
+.slide-counter strong{color:#ead8cc;font-weight:600}
+@media(max-width:1040px){
+  .heading-1{font-size:48px}.heading-2{font-size:36px}.heading-3{font-size:30px}
+  .hero-layout{grid-template-columns:minmax(0,.9fr) minmax(420px,1.1fr);gap:24px 32px}
+  .feature-layout,.feature-layout.reverse{gap:32px;grid-template-columns:minmax(0,.84fr) minmax(420px,1.16fr)}
+  .feature-layout.reverse{grid-template-columns:minmax(420px,1.16fr) minmax(0,.84fr)}
+  .nav-links{gap:16px}
+}
+@media(max-width:860px){
+  html,body{height:auto;min-height:100%;overflow:auto}
+  body{display:block}
+  .site-header{position:sticky;top:0}
+  .nav-bar{margin-inline:16px}.container{width:min(100% - 32px,720px)}
+  .nav-links,.nav-actions .github-link{display:none}.menu-toggle{display:grid}.mobile-menu{display:block}
+  .slide{position:relative;inset:auto;min-height:calc(100svh - 84px);opacity:1;visibility:visible;transform:none;pointer-events:auto;padding:24px 0 40px}
+  .js .slide:not(.is-active){display:none}.slide-inner{min-height:0;justify-content:flex-start}
+  .hero-layout{grid-template-columns:1fr;grid-template-areas:"copy" "visual" "stats";gap:24px}
+  .hero-copy{max-width:none}.hero-copy h1{max-width:680px}
+  .stat-strip{grid-template-columns:1fr 1fr 1fr}
+  .benefit-grid,.platform-grid{grid-template-columns:1fr}
+  .feature-layout,.feature-layout.reverse{grid-template-columns:1fr;gap:24px}.feature-layout.reverse .feature-copy{order:1}.feature-layout.reverse .media-card{order:2}
+  .download-layout{grid-template-columns:1fr;gap:24px}
+  .site-footer{position:relative}.footer-hint{display:none}
+}
+@media(max-width:560px){
+  .site-header{padding-top:10px}.nav-bar{height:56px;padding-left:12px}.brand img{width:30px;height:30px}
+  .heading-1{font-size:38px;letter-spacing:-.045em}.heading-2{font-size:30px}.heading-3{font-size:27px}.body-lg{font-size:15px}.body-md{font-size:14px}
+  .hero-copy h1{margin-top:15px}.hero-copy .body-lg{margin-top:15px}.hero-actions .button{width:100%}
+  .proof-line{gap:7px 14px;font-size:11px}.stat-strip{grid-template-columns:1fr}.stat{border-right:0;border-bottom:1px solid var(--line)}.stat:last-child{border-bottom:0}
+  .app-body{grid-template-columns:122px minmax(0,1fr);min-height:315px}.app-sidebar{padding-inline:6px}.app-main .detail-icon{width:34px;height:34px}
+  .benefit-card,.platform-card{padding:17px}.benefit-top{margin-bottom:13px}
+  .media-card{padding:6px;border-radius:18px}.catalog-demo{grid-template-columns:125px minmax(0,1fr);min-height:300px}.catalog-side{padding:8px}
+  .sync-board,.download-board{grid-template-columns:1fr}.sync-board .sync-panel:nth-child(2){border-top:1px solid var(--line)}
+  .install-stage{padding:10px}.install-window{width:100%}
+  .platform-note{align-items:flex-start;flex-direction:column}.cta-panel{padding:22px}.cta-actions .button{width:100%}
+  .footer-brand{font-size:9px}.slide-counter{min-width:58px}.icon-button{width:29px;height:29px}.footer-inner{height:36px}.mobile-menu button{font-size:23px}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}
+}
+</style>
+<noscript><style>html,body{height:auto;overflow:auto}body{display:block}.slide{position:relative;inset:auto;min-height:100vh;opacity:1;visibility:visible;transform:none;pointer-events:auto}.site-footer{position:sticky}</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#overview">跳到页面正文</a>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-package" viewBox="0 0 24 24"><path d="m12 2 9 4.5v11L12 22l-9-4.5v-11L12 2Zm0 2.2L5.8 7.3 12 10.6l6.2-3.3L12 4.2ZM5 9v6.9l6 3V12L5 9Zm8 3v6.9l6-3V9l-6 3Z"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3Zm2 2v4h4V5H5Zm8-2h8v8h-8V3Zm2 2v4h4V5h-4ZM3 13h8v8H3v-8Zm2 2v4h4v-4H5Zm8-2h8v8h-8v-8Zm2 2v4h4v-4h-4Z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M10.5 3a7.5 7.5 0 1 1-4.8 13.3L2 20l1.4 1.4 3.7-3.7A7.5 7.5 0 0 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M11 3h2v10l3-3 1.4 1.4L12 17l-5.4-5.6L8 10l3 3V3ZM4 19h16v2H4v-2Z"/></symbol>
+  <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 .8a11.2 11.2 0 0 0-3.5 21.8c.5.1.7-.2.7-.5v-2.1c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 0 1.5 1.1 1.5 1.1.9 1.5 2.4 1.1 3 .8.1-.7.4-1.1.7-1.4-2.2-.3-4.6-1.1-4.6-4.9 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.7.7 1 1.6 1 2.7 0 3.8-2.4 4.6-4.6 4.9.4.3.7.9.7 1.9V22c0 .3.2.6.7.5A11.2 11.2 0 0 0 12 .8Z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 2 8 3v6c0 5.1-3.4 9.4-8 11-4.6-1.6-8-5.9-8-11V5l8-3Zm0 2.2L6 6.4V11c0 3.8 2.4 7.1 6 8.7 3.6-1.6 6-4.9 6-8.7V6.4l-6-2.2Zm-1 4h2v5h-2V8.2Zm0 6.5h2v2h-2v-2Z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m9.2 16.6-4.3-4.3-1.4 1.4 5.7 5.7L21 7.6l-1.4-1.4-10.4 10.4Z"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m13.2 5.2 6.8 6.8-6.8 6.8-1.4-1.4 4.4-4.4H4v-2h12.2l-4.4-4.4 1.4-1.4Z"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.7 5.3 1.4 1.4L4.8 12l5.3 5.3-1.4 1.4L1.9 12l6.8-6.7Zm6.6 0L22.1 12l-6.8 6.7-1.4-1.4 5.3-5.3-5.3-5.3 1.4-1.4Z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7l10-5Zm0 2.2L6.8 7 12 9.6 17.2 7 12 4.2ZM4.9 10.7 12 14.3l7.1-3.6L22 12l-10 5-10-5 2.9-1.3Zm0 4L12 18.3l7.1-3.6L22 16l-10 5-10-5 2.9-1.3Z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M5 2h9l5 5v15H5V2Zm2 2v14h10V8h-4V4H7Zm8 .4V6h1.6L15 4.4Z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 4h4v2H4V4Zm6 0h10v2H10V4ZM4 11h4v2H4v-2Zm6 0h10v2H10v-2ZM4 18h4v2H4v-2Zm6 0h10v2H10v-2Z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path d="M6 10V7a6 6 0 0 1 12 0v3h1v11H5V10h1Zm2 0h8V7a4 4 0 0 0-8 0v3Zm-1 2v7h10v-7H7Zm4 2h2v3h-2v-3Z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 1 8.5 6H18a7 7 0 1 0 .4 6.6l1.8.9A9 9 0 1 1 12 3Zm-.7 4h2v4.6l3 1.8-1 1.7-4-2.4V7Z"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M13 3h8v8h-2V6.6l-8.3 8.3-1.4-1.4L17.6 5H13V3ZM4 5h6v2H6v11h11v-4h2v6H4V5Z"/></symbol>
+  <symbol id="i-linux" viewBox="0 0 24 24"><path d="M12 2c3 0 4.5 2.5 4.5 5.5 0 1.7.5 3 1.5 4.4 1.4 1.9 2 3.9 1.4 5.2-.3.8-1.1 1.1-2 1-.4 1.1-1.2 1.7-2.2 1.7-.9 0-1.5-.4-2-.9-.4.2-.8.3-1.2.3s-.8-.1-1.2-.3c-.5.5-1.1.9-2 .9-1 0-1.8-.6-2.2-1.7-.9.1-1.7-.2-2-1-.6-1.3 0-3.3 1.4-5.2 1-1.4 1.5-2.7 1.5-4.4C7.5 4.5 9 2 12 2Zm0 2c-1.5 0-2.5 1.5-2.5 3.5S8.6 10.9 7.3 12.7c-.9 1.2-1.4 2.5-1.3 3.2.1.2.5.3 1 .2l.8-.2.5 1c.2.5.5.8.9.8.5 0 .9-.3 1.2-.8l.7-1.1.8.6c.4.3.7.4 1.1.4.4 0 .7-.1 1.1-.4l.8-.6.7 1.1c.3.5.7.8 1.2.8.4 0 .7-.3.9-.8l.5-1 .8.2c.5.1.9 0 1-.2.1-.7-.4-2-1.3-3.2-1.3-1.8-2.2-3.7-2.2-5.7C14.5 5.5 13.5 4 12 4Zm-1.6 4.1a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm3.2 0a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><path d="M7 7h10v10H7V7Zm2 2v6h6V9H9Zm10-2h3v2h-3v6h3v2h-3v5h-2v-3H8v3H6v-3H3v-2h3V9H3V7h3V2h2v3h6V2h2v5Zm-10 0v6h6V9H9Z"/></symbol>
+  <symbol id="i-workflow" viewBox="0 0 24 24"><path d="M3 3h6v6H3V3Zm12 0h6v6h-6V3ZM3 15h6v6H3v-6Zm12 0h6v6h-6v-6ZM9 6h6v2H9V6Zm-3 3h2v6H6V9Zm12 0h2v6h-2V9Zm-9 4h6v2H9v-2Z"/></symbol>
+  <symbol id="i-warning" viewBox="0 0 24 24"><path d="M12 2 23 21H1L12 2Zm0 4L4.1 19h15.8L12 6Zm-1 3h2v6h-2V9Zm0 8h2v2h-2v-2Z"/></symbol>
+  <symbol id="i-disk" viewBox="0 0 24 24"><path d="M3 4h18v16H3V4Zm2 2v12h14V6H5Zm2 2h6v2H7V8Zm0 4h2v2H7v-2Zm4 0h2v2h-2v-2Zm4 0h2v2h-2v-2Z"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 4h18v3L14 14v6l-4 2v-8L3 7V4Zm2.5 2 .9 1H14l5.6-6.3h.9V6h-12Z"/></symbol>
+</svg>
+
+<header class="site-header">
+  <div class="container nav-bar">
+    <a class="brand" href="#overview" data-go="0" aria-label="DebDeck 首页"><img src="debdeck.svg" width="34" height="34" alt="">DebDeck</a>
+    <nav class="nav-links" aria-label="主导航">
+      <button class="nav-link" type="button" data-go="0" data-range="0" aria-current="page">概览</button>
+      <button class="nav-link" type="button" data-go="1" data-range="1">优势</button>
+      <button class="nav-link" type="button" data-go="2" data-range="2">软件目录</button>
+      <button class="nav-link" type="button" data-go="3" data-range="3">应用详情</button>
+      <button class="nav-link" type="button" data-go="4" data-range="4">安装</button>
+      <button class="nav-link" type="button" data-go="5" data-range="5">安装包</button>
+      <button class="nav-link" type="button" data-go="6" data-range="6">平台</button>
+      <button class="nav-link" type="button" data-go="7" data-range="7">下载</button>
+    </nav>
+    <div class="nav-actions">
+      <a class="nav-icon github-link" href="https://github.com/mangerle/debdeck" aria-label="打开 GitHub 仓库"><svg class="icon"><use href="#i-github"/></svg></a>
+      <button class="menu-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="mobileMenu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+
+<nav class="mobile-menu" id="mobileMenu" aria-label="移动导航" aria-hidden="true">
+  <button type="button" data-go="0" style="--i:0">概览</button>
+  <button type="button" data-go="1" style="--i:1">核心优势</button>
+  <button type="button" data-go="2" style="--i:2">软件目录</button>
+  <button type="button" data-go="3" style="--i:3">应用详情</button>
+  <button type="button" data-go="4" style="--i:4">本地安装</button>
+  <button type="button" data-go="5" style="--i:5">安装包工作流</button>
+  <button type="button" data-go="6" style="--i:6">平台与发布</button>
+  <button type="button" data-go="7" style="--i:7">下载与常见问题</button>
+</nav>
+
+<main class="deck" id="main" tabindex="-1">
+  <section class="slide hero-slide is-active" id="overview" aria-label="DebDeck 概览">
+    <div class="slide-inner hero-layout">
+      <div class="hero-copy">
+        <span class="kicker">Rust + GPUI 原生 Ubuntu 软件包管理器</span>
+        <h1 class="heading-1">把 APT 与 dpkg，<span class="gradient-text">收进一张原生牌桌</span></h1>
+        <p class="body-lg">DebDeck 把已安装软件和软件源候选包汇总到同一个目录。查找应用、查看文件、启动或卸载、下载安装包，以及在离线时重建 .deb，都在一个原生窗口里完成。</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/mangerle/debdeck/releases/latest"><svg class="icon"><use href="#i-download"/></svg>下载最新版本</a>
+          <a class="button button-secondary" href="https://github.com/mangerle/debdeck"><svg class="icon"><use href="#i-code"/></svg>查看源码</a>
+        </div>
+        <div class="proof-line">
+          <span class="proof-item"><svg class="icon"><use href="#i-check"/></svg>已安装与候选版本同屏</span>
+          <span class="proof-item"><svg class="icon"><use href="#i-check"/></svg>不嵌 WebView</span>
+          <span class="proof-item"><svg class="icon"><use href="#i-check"/></svg>Apache 2.0 开源</span>
+        </div>
+      </div>
+      <div class="hero-visual">
+        <div class="app-window" aria-hidden="true">
+          <div class="app-titlebar"><div class="traffic"><i></i><i></i><i></i></div><span class="app-title"><b>DebDeck</b> / 软件目录</span></div>
+          <div class="app-body">
+            <aside class="app-sidebar">
+              <div class="sidebar-brand"><span class="mini-logo"><img src="debdeck.svg" alt="">软件目录</span><span class="sidebar-plus">+</span></div>
+              <div class="search-box"><svg class="icon"><use href="#i-search"/></svg><span>搜索名称、包名或拼音</span><kbd>F</kbd></div>
+              <div class="filter-pills"><span class="filter-pill active">全部</span><span class="filter-pill">界面</span><span class="filter-pill">已装</span></div>
+              <div class="list-label"><span>应用</span><span>4,218</span></div>
+              <div class="pkg-row active"><span class="pkg-icon">G</span><span class="pkg-name"><strong>GIMP</strong><span>gimp</span></span><i class="state-dot update"></i></div>
+              <div class="pkg-row"><span class="pkg-icon blue">F</span><span class="pkg-name"><strong>Firefox 浏览器</strong><span>firefox</span></span><i class="state-dot"></i></div>
+              <div class="pkg-row"><span class="pkg-icon cyan">V</span><span class="pkg-name"><strong>VLC 媒体播放器</strong><span>vlc</span></span><i class="state-dot"></i></div>
+              <div class="pkg-row"><span class="pkg-icon purple">C</span><span class="pkg-name"><strong>Visual Studio Code</strong><span>code</span></span><i class="state-dot"></i></div>
+              <div class="pkg-row"><span class="pkg-icon green">G</span><span class="pkg-name"><strong>Git</strong><span>git</span></span><i class="state-dot idle"></i></div>
+              <div class="pkg-row"><span class="pkg-icon">D</span><span class="pkg-name"><strong>Docker CE</strong><span>docker-ce</span></span><i class="state-dot idle"></i></div>
+            </aside>
+            <div class="app-main">
+              <div class="detail-head"><span class="detail-icon">G</span><div class="detail-title"><h3>GIMP</h3><p>gimp · 2.10.38-2</p></div><span class="status-badge">已安装</span></div>
+              <div class="action-row"><span class="mini-button primary">打开</span><span class="mini-button">卸载</span><span class="mini-button">保持版本</span><span class="mini-button">在线获取</span></div>
+              <div class="detail-tabs"><strong>详细信息</strong><span>文件清单</span><span>版本记录</span></div>
+              <div class="detail-body">
+                <div class="meta-grid">
+                  <span class="meta-cell"><span>已安装版本</span><strong>2.10.38-2</strong></span>
+                  <span class="meta-cell"><span>安装体积</span><strong>118.4 MiB</strong></span>
+                  <span class="meta-cell"><span>软件源</span><strong>ubuntu-main</strong></span>
+                  <span class="meta-cell"><span>架构</span><strong>amd64</strong></span>
+                </div>
+                <div class="description"><b>GNU Image Manipulation Program</b><br>图像编辑、图层处理与插件扩展。DebDeck 已读取桌面条目，可直接从软件目录启动。</div>
+              </div>
+              <div class="detail-footer"><span>文件 <b>2,184</b></span><span>主页 <b>gimp.org</b></span><span>更新于 <b>2026-10-08</b></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="stat-strip" aria-label="产品数据">
+        <div class="stat"><strong>APT + dpkg</strong><span>系统只使用 Ubuntu 原有包管理链路</span></div>
+        <div class="stat"><strong>视口级绘制</strong><span>数万行软件目录只绘制当前可见区域</span></div>
+        <div class="stat"><strong>原生 GPUI</strong><span>无 Electron、无内置浏览器运行时</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="benefits" aria-label="核心优势" aria-hidden="true">
+    <div class="slide-inner section-layout">
+      <div class="section-heading">
+        <span class="kicker">核心优势</span>
+        <h2 class="heading-2">一个软件目录，替代散落在终端的多次查询</h2>
+        <p class="body-md">DebDeck 面向不想手工拼装 apt、dpkg 与 pkexec 命令的 Ubuntu 用户。它负责整理状态与入口，真正的系统变更仍然走 Ubuntu 原有链路，并由 polkit 管理授权。</p>
+      </div>
+      <div class="benefit-grid">
+        <article class="benefit-card"><div class="benefit-top"><span class="icon-box"><svg class="icon"><use href="#i-layers"/></svg></span><span class="index-pill">01</span></div><h3>统一目录，不丢版本</h3><p>合并 dpkg 安装状态与 APT 软件源索引，同一个应用保留多个可用版本。已安装、可更新、保持版本和未安装状态一眼可辨。</p><span class="card-caption">dpkg 状态 + APT 索引</span></article>
+        <article class="benefit-card"><div class="benefit-top"><span class="icon-box gold"><svg class="icon"><use href="#i-search"/></svg></span><span class="index-pill">02</span></div><h3>按应用找包，比命令更直觉</h3><p>支持显示名、包名与拼音搜索；可只显示图形界面应用，并按名称、更新时间或版本排序，筛完再搜仍保持同一范围。</p><span class="card-caption">名称 / 包名 / 拼音</span></article>
+        <article class="benefit-card"><div class="benefit-top"><span class="icon-box cyan"><svg class="icon"><use href="#i-shield"/></svg></span><span class="index-pill">03</span></div><h3>原生渲染，权限边界清晰</h3><p>界面由 GPUI 经 GPU 绘制，不内嵌浏览器。读取操作以普通用户身份运行，涉及安装、卸载和保持版本时才请求管理员授权。</p><span class="card-caption">Polkit 控制系统变更</span></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="catalog" aria-label="统一软件目录" aria-hidden="true">
+    <div class="slide-inner feature-layout">
+      <div class="feature-copy">
+        <span class="kicker">统一软件目录</span>
+        <h2 class="heading-3">搜索一个应用，也看见它对应的包</h2>
+        <p class="body-lg">不用先判断它来自 dpkg、APT 还是某个额外软件源。DebDeck 先把系统状态与仓库候选合并，再把搜索结果按你熟悉的应用名称呈现。</p>
+        <ul class="feature-list">
+          <li><svg class="icon"><use href="#i-check"/></svg><span>已安装状态与软件源候选包同时载入，候选版本按版本号降序保留。</span></li>
+          <li><svg class="icon"><use href="#i-check"/></svg><span>桌面条目、包名、显示名与拼音都能参与搜索，中文输入也能直接匹配。</span></li>
+          <li><svg class="icon"><use href="#i-check"/></svg><span>筛成“图形界面应用”后，命令行软件包就不会淹没结果。</span></li>
+          <li><svg class="icon"><use href="#i-check"/></svg><span>按名称、更新时间或版本排序，列表只绘制当前视口，保持滚动顺滑。</span></li>
+        </ul>
+      </div>
+      <div class="media-card">
+        <div class="media-card-inner" aria-hidden="true">
+          <div class="media-toolbar"><b>软件目录 / 搜索 “图像”</b><span class="media-dots"><i></i><i></i><i></i></span></div>
+          <div class="catalog-demo">
+            <div class="catalog-side">
+              <div class="demo-search"><svg class="icon"><use href="#i-search"/></svg><span>图像</span></div>
+              <div class="demo-filters chips"><span class="chip active">全部</span><span class="chip">图形界面</span><span class="chip">已安装</span></div>
+              <div class="demo-list">
+                <div class="demo-row active"><span class="pkg-icon">G</span><span class="pkg-name"><strong>GIMP</strong><span>gimp · 2.10.38</span></span><span class="demo-badge">更新</span></div>
+                <div class="demo-row"><span class="pkg-icon">K</span><span class="pkg-name"><strong>Krita</strong><span>krita · 5.2.11</span></span></div>
+                <div class="demo-row"><span class="pkg-icon purple">I</span><span class="pkg-name"><strong>Inkscape</strong><span>inkscape · 1.3.2</span></span></div>
+                <div class="demo-row"><span class="pkg-icon cyan">D</span><span class="pkg-name"><strong>Darktable</strong><span>darktable · 4.8.1</span></span></div>
+                <div class="demo-row"><span class="pkg-icon green">S</span><span class="pkg-name"><strong>Shotwell</strong><span>shotwell · 0.32.8</span></span></div>
+                <div class="demo-row"><span class="pkg-icon blue">L</span><span class="pkg-name"><strong>LibreOffice Draw</strong><span>libreoffice-draw</span></span></div>
+              </div>
+            </div>
+            <div class="catalog-detail">
+              <div class="demo-package-head"><span class="detail-icon">G</span><div><h3>GIMP</h3><p>gimp · GNU Image Manipulation Program</p></div></div>
+              <div class="demo-actions"><span class="mini-button primary">打开</span><span class="mini-button">在线获取安装包</span><span class="mini-button">隐藏启动项</span></div>
+              <div class="info-table">
+                <div class="info-row"><span>当前状态</span><strong style="color:var(--success)">已安装 · 可更新</strong></div>
+                <div class="info-row"><span>已安装版本</span><code>2.10.38-2</code></div>
+                <div class="info-row"><span>候选版本</span><code>2.10.38-3</code></div>
+                <div class="info-row"><span>安装体积</span><strong>118.4 MiB</strong></div>
+                <div class="info-row"><span>下载体积</span><strong>31.2 MiB</strong></div>
+                <div class="info-row"><span>软件源</span><strong>ubuntu-main / ubuntu-updates</strong></div>
+                <div class="info-row"><span>启动命令</span><strong>gimp %U</strong></div>
+                <div class="info-row"><span>主页</span><strong>www.gimp.org</strong></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="details" aria-label="应用详情与操作" aria-hidden="true">
+    <div class="slide-inner feature-layout reverse">
+      <div class="media-card">
+        <div class="media-card-inner" aria-hidden="true">
+          <div class="media-toolbar"><b>应用详情 / GIMP</b><span class="media-dots"><i></i><i></i><i></i></span></div>
+          <div class="catalog-detail" style="min-height:328px">
+            <div class="demo-package-head"><span class="detail-icon">G</span><div><h3>GIMP</h3><p>gimp · 2.10.38-2 · amd64</p></div><span class="status-badge" style="margin-left:auto">已保持</span></div>
+            <div class="demo-actions"><span class="mini-button primary">打开</span><span class="mini-button">卸载</span><span class="mini-button">取消保持版本</span><span class="mini-button">离线提取安装包</span></div>
+            <div class="detail-tabs" style="height:31px"><strong>文件清单</strong><span>详细信息</span></div>
+            <div style="display:flex;align-items:center;gap:7px;padding:8px 14px;border-bottom:1px solid var(--line);color:#967d6f;font-size:8px"><svg class="icon" style="width:11px;height:11px"><use href="#i-search"/></svg>usr/share/<span style="margin-left:auto;color:#796255">2,184 个文件</span></div>
+            <div style="padding:3px 9px">
+              <div class="file-row"><span class="file-icon dir"></span><span>/usr/bin/gimp</span><span class="file-size">4.1 KB</span></div>
+              <div class="file-row"><span class="file-icon"></span><span>/usr/lib/gimp/2.0/plug-ins/file-png</span><span class="file-size">93 KB</span></div>
+              <div class="file-row"><span class="file-icon"></span><span>/usr/share/applications/gimp.desktop</span><span class="file-size">6.8 KB</span></div>
+              <div class="file-row"><span class="file-icon"></span><span>/usr/share/icons/hicolor/64x64/apps/gimp.png</span><span class="file-size">7.4 KB</span></div>
+              <div class="file-row"><span class="file-icon"></span><span>/usr/share/gimp/2.0/scripts/script-fu</span><span class="file-size">138 KB</span></div>
+              <div class="file-row"><span class="file-icon"></span><span>/usr/share/man/man1/gimp.1.gz</span><span class="file-size">12 KB</span></div>
+              <div class="file-row"><span class="file-icon"></span><span>/usr/share/doc/gimp/copyright</span><span class="file-size">32 KB</span></div>
+            </div>
+            <div class="detail-footer"><span>桌面条目 <b>已识别</b></span><span>启动命令 <b>gimp %U</b></span><span>启动器 <b>系统级</b></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="feature-copy">
+        <span class="kicker">应用详情与操作</span>
+        <h2 class="heading-3">不只看到版本，还知道它能做什么</h2>
+        <p class="body-lg">选中应用后，右侧会展开体积、状态、下载地址、主页、桌面条目、启动命令和完整文件清单。面向应用的动作就放在这些上下文旁边。</p>
+        <ul class="feature-list">
+          <li><svg class="icon"><use href="#i-open"/></svg><span>直接通过 .desktop 条目启动已安装的图形应用，不绕终端。</span></li>
+          <li><svg class="icon"><use href="#i-list"/></svg><span>搜索已安装包拥有的文件，确认某个命令或插件究竟来自哪里。</span></li>
+          <li><svg class="icon"><use href="#i-lock"/></svg><span>保持版本或取消保持，避免不想动的软件被日常升级带走。</span></li>
+          <li><svg class="icon"><use href="#i-filter"/></svg><span>只为当前用户隐藏启动项，不修改系统级桌面条目，也不冒充卸载。</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="install" aria-label="本地 .deb 安装" aria-hidden="true">
+    <div class="slide-inner feature-layout">
+      <div class="feature-copy">
+        <span class="kicker">本地 .deb 安装</span>
+        <h2 class="heading-3">双击一个安装包，走完一条可理解的授权路径</h2>
+        <p class="body-lg">打开本地 .deb 后先读取包信息并做预检，再把维护脚本会以管理员身份执行这件事明确摊开。确认之后才发起应用内授权与安装。</p>
+        <ul class="feature-list">
+          <li><svg class="icon"><use href="#i-file"/></svg><span>预检包结构、元数据与文件路径；无法读取时直接说明原因。</span></li>
+          <li><svg class="icon"><use href="#i-warning"/></svg><span>安装前明确提示：本地包的 postinst 等维护脚本将由管理员权限运行。</span></li>
+          <li><svg class="icon"><use href="#i-shield"/></svg><span>通过 polkit 的应用内授权流程请求权限，不要求整个界面以 root 启动。</span></li>
+          <li><svg class="icon"><use href="#i-package"/></svg><span>安装阶段显示持续状态，结束后给出可读的成功信息或失败原因。</span></li>
+        </ul>
+      </div>
+      <div class="media-card">
+        <div class="media-card-inner install-stage">
+          <div class="install-window" aria-hidden="true">
+            <div class="install-title"><img src="debdeck.svg" alt="">DebDeck <span>安装 notion-desktop_4.2.1_amd64.deb</span></div>
+            <div class="install-content">
+              <div class="install-package"><span class="pkg-icon blue">N</span><div><h3>Notion Desktop</h3><p>notion-desktop · 4.2.1 · 86.7 MiB</p></div><span class="chip active">本地文件</span></div>
+              <div class="install-warning"><svg class="icon"><use href="#i-warning"/></svg><div>安装包来自本地文件，其维护脚本将以管理员身份执行。请确认文件来源可信。</div></div>
+              <div class="install-note">安装过程调用 Ubuntu 的 apt/dpkg 路径。DebDeck 不会绕过依赖检查，也不会替你修改系统软件源。</div>
+              <div class="install-progress"><i></i><span>授权成功，正在安装软件包…</span><span class="bar"><b></b></span><span>62%</span></div>
+            </div>
+            <div class="install-actions"><span class="mini-button">取消</span><span class="mini-button primary" style="opacity:.55">安装中</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="artifacts" aria-label="下载与离线重建安装包" aria-hidden="true">
+    <div class="slide-inner feature-layout reverse">
+      <div class="media-card">
+        <div class="media-card-inner" aria-hidden="true">
+          <div class="media-toolbar"><b>安装包工作流 / GIMP</b><span class="media-dots"><i></i><i></i><i></i></span></div>
+          <div class="download-board">
+            <div class="download-column">
+              <h3><span>在线获取安装包</span><span class="chip active">APT</span></h3>
+              <div class="version-row selected"><i class="radio active"></i><span>2.10.38-3</span><code>ubuntu-updates</code><em>31.2 MB</em></div>
+              <div class="version-row"><i class="radio"></i><span>2.10.38-2</span><code>ubuntu-main</code><em>31.1 MB</em></div>
+              <div class="version-row"><i class="radio"></i><span>2.10.36-1</span><code>ubuntu-main</code><em>30.8 MB</em></div>
+              <div class="queue-card"><strong><span>gimp_2.10.38-3_amd64.deb</span><em>76%</em></strong><div class="queue-track"><i></i></div><div class="queue-meta"><span>24.1 MB / 31.2 MB</span><span>11.4 MB/s · 可取消</span></div></div>
+              <div class="queue-card" style="background:rgba(101,214,166,.04)"><strong><span>保存到下载目录</span><em>✓</em></strong><div class="queue-meta"><span>~/Downloads/debdeck/</span><span>SHA-256 可复核</span></div></div>
+            </div>
+            <div class="download-column">
+              <h3><span>离线重建安装包</span><span class="chip active" style="color:var(--success)">LOCAL</span></h3>
+              <div class="rebuild-card" style="padding:0;border:0">
+                <div class="pipeline"><span class="pipeline-node">FS</span><span class="pipeline-arrow"></span><span class="pipeline-node">CT</span><span class="pipeline-arrow"></span><span class="pipeline-node">MD</span><span class="pipeline-arrow"></span><span class="pipeline-node" style="color:var(--gold);border-color:rgba(255,209,102,.25)">DEB</span></div>
+                <div class="rebuild-steps">
+                  <div class="rebuild-step"><i>1</i><span>读取已安装文件与原始元数据</span></div>
+                  <div class="rebuild-step"><i>2</i><span>重新生成 control、安装体积与校验和</span></div>
+                  <div class="rebuild-step"><i>3</i><span>输出可再次安装的 .deb 备份</span></div>
+                </div>
+                <div class="install-progress" style="margin-top:10px"><i></i><span>正在计算文件校验和</span><span class="bar"><b></b></span><span>48%</span></div>
+              </div>
+              <div class="description" style="margin-top:10px;font-size:8px"><b>重新打包，而不是复制旧包。</b><br>DebDeck 会根据当前磁盘文件重建安装体积与摘要，避免把已经失效的旧包内部数据原样塞回去。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="feature-copy">
+        <span class="kicker">安装包工作流</span>
+        <h2 class="heading-3">在线下载和离线重建，都能留下可再次安装的 .deb</h2>
+        <p class="body-lg">选择一个可用版本，把软件源中的安装包下载到指定目录；当原安装包不可用或机器离线时，也可以从当前已安装文件重新打包。</p>
+        <ul class="feature-list">
+          <li><svg class="icon"><use href="#i-download"/></svg><span>下载页展示进度、速度、完成状态，并允许在传输中取消。</span></li>
+          <li><svg class="icon"><use href="#i-layers"/></svg><span>同一应用的多个仓库版本都可选择，而不是只留下最新版本。</span></li>
+          <li><svg class="icon"><use href="#i-refresh"/></svg><span>重建时重新计算 control 元数据、安装体积与文件校验和。</span></li>
+          <li><svg class="icon"><use href="#i-disk"/></svg><span>产物适合备份或迁移，可在目标机器上再次通过 DebDeck 安装。</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="platforms" aria-label="平台与发布" aria-hidden="true">
+    <div class="slide-inner section-layout">
+      <div class="section-heading">
+        <span class="kicker">平台与发布</span>
+        <h2 class="heading-2">为 Ubuntu 桌面而建，从 CI 到 .deb 一条链路</h2>
+        <p class="body-md">DebDeck 的目标平台是 Ubuntu 24.04 或更新版本。发布产物直接由 Cargo 与 cargo-deb 构建，不额外包装一套本地打包脚本；两种主流架构由 GitHub Actions 分别验证和产出。</p>
+      </div>
+      <div class="platform-grid">
+        <article class="platform-card"><div class="platform-head"><h3>Ubuntu x86_64</h3><span class="platform-icon"><svg class="icon"><use href="#i-linux"/></svg></span></div><p>主要桌面与验证目标。支持 Wayland 与 X11，桌面图标、双击 .deb、应用启动器和 polkit 集成均随包安装。</p><div class="chips"><span class="chip">DEB</span><span class="chip">amd64</span><span class="chip">Wayland</span><span class="chip">X11</span></div></article>
+        <article class="platform-card"><div class="platform-head"><h3>Ubuntu arm64</h3><span class="platform-icon"><svg class="icon"><use href="#i-chip"/></svg></span></div><p>独立构建的 ARM64 安装包，适用于原生 ARM 桌面与开发板环境。依赖由 cargo-deb 从 ELF 产物自动推导。</p><div class="chips"><span class="chip">DEB</span><span class="chip">arm64</span><span class="chip">Native build</span><span class="chip">$auto deps</span></div></article>
+        <article class="platform-card"><div class="platform-head"><h3>CI 与 Release</h3><span class="platform-icon"><svg class="icon"><use href="#i-workflow"/></svg></span></div><p>推送与 PR 运行格式、Clippy、测试和 release 构建；版本标签产出双架构 .deb、校验文件与 GitHub Release。</p><div class="chips"><span class="chip">GitHub Actions</span><span class="chip">Clippy</span><span class="chip">Tests</span><span class="chip">SHA256SUMS</span></div></article>
+      </div>
+      <div class="platform-note"><span>DebDeck 使用 Ubuntu 原有 apt-get、apt-mark 与 dpkg 路径；打包元数据集中在 Cargo.toml，避免手抄容易过期的动态库清单。</span><div class="chips"><span class="chip">Apache 2.0</span><span class="chip">Polkit</span><span class="chip">cargo-deb</span></div></div>
+    </div>
+  </section>
+
+  <section class="slide" id="download" aria-label="下载与常见问题" aria-hidden="true">
+    <div class="slide-inner download-layout">
+      <div class="cta-panel">
+        <span class="kicker">开始使用</span>
+        <h2 class="heading-2">把下一份软件清单，<span class="gradient-text">交给 DebDeck</span></h2>
+        <p>从最新 Release 下载适合当前架构的 .deb，再用 APT 安装以自动解析依赖。无需注册账号，软件目录、下载记录和离线备份都留在你的设备上。</p>
+        <div class="cta-actions"><a class="button button-primary" href="https://github.com/mangerle/debdeck/releases/latest"><svg class="icon"><use href="#i-download"/></svg>下载 DebDeck</a><a class="button button-secondary" href="https://github.com/mangerle/debdeck"><svg class="icon"><use href="#i-github"/></svg>查看源码</a></div>
+        <div class="cta-meta"><span><svg class="icon"><use href="#i-linux"/></svg>Ubuntu 24.04+</span><span><svg class="icon"><use href="#i-chip"/></svg>amd64 / arm64</span><span><svg class="icon"><use href="#i-shield"/></svg>Apache 2.0 开源</span></div>
+      </div>
+      <div class="faq-list">
+        <details open><summary>DebDeck 会替换 APT 或 dpkg 吗？</summary><p>不会。它负责读取状态、整理目录和发出动作，实际安装、卸载、保持版本与重打包仍调用 Ubuntu 原有的 apt-get、apt-mark 与 dpkg。依赖解析继续交给 APT。</p></details>
+        <details><summary>需要一直用 root 启动吗？</summary><p>不需要。浏览和查看以普通用户身份运行；只有系统变更才通过 polkit 请求管理员授权。因此日常搜索、查看文件清单和读取包信息不会一直暴露在高权限进程中。</p></details>
+        <details><summary>本地 .deb 安装为什么还要单独确认？</summary><p>本地包的 postinst、preinst 等维护脚本会在安装时以管理员身份执行。DebDeck 会在安装前提示来源风险，先做预检，再让用户明确确认，而不是双击后静默提权。</p></details>
+        <details><summary>离线重建会直接复制旧安装包吗？</summary><p>不会。DebDeck 从已安装到磁盘上的文件重新打包，重新计算 control 元数据、安装体积和文件校验和。它适合备份或迁移，但不等同于软件源中未修改的原始发行包。</p></details>
+        <details><summary>为什么界面使用 GPUI？</summary><p>DebDeck 希望软件目录像原生桌面程序一样快速响应，而不是打包 Chromium。界面由 GPUI 与真实字体引擎绘制，大列表只渲染视口内的行，后台扫描与耗时操作不阻塞主界面。</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="progress-rail" aria-hidden="true"><i class="progress-bar" id="progressBar"></i></div>
+  <div class="container footer-inner">
+    <span class="footer-brand">DebDeck · Apache 2.0 · 本地优先</span>
+    <span class="footer-hint">滚轮、方向键或触摸切换介绍</span>
+    <div class="deck-controls">
+      <button class="icon-button prev" id="prevSlide" type="button" aria-label="上一个介绍"><svg class="icon"><use href="#i-arrow"/></svg></button>
+      <span class="slide-counter"><strong id="currentSlide">01</strong> / <span id="totalSlides">08</span></span>
+      <button class="icon-button next" id="nextSlide" type="button" aria-label="下一个介绍"><svg class="icon"><use href="#i-arrow"/></svg></button>
+    </div>
+  </div>
+</footer>
+
+<style>
+.cta-panel .gradient-text{display:block}
+.install-window{width:min(400px,94%)}
+.file-row{display:grid;grid-template-columns:14px minmax(0,1fr) 46px;gap:6px;align-items:center;min-height:24px;padding:0 6px;border-radius:5px;color:#a58c7e;font-size:8px}
+.file-row:nth-child(odd){background:rgba(255,255,255,.018)}
+.file-icon{width:9px;height:9px;border-radius:2px;background:#604638}
+.file-icon.dir{background:var(--gold)}
+.file-size{text-align:right;color:#7c6558;font:7px "SFMono-Regular",Consolas,monospace}
+@media(max-width:560px){
+  .info-table{padding:9px}.info-row{grid-template-columns:66px minmax(0,1fr)}
+  .app-main .detail-body{padding:8px}.detail-footer{gap:6px;font-size:6px}
+  .file-row{font-size:7px}.file-size{font-size:6px}
+}
+</style>
+
+<script>
+(function(){
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var deck = document.getElementById('main');
+  var progressBar = document.getElementById('progressBar');
+  var currentLabel = document.getElementById('currentSlide');
+  var totalLabel = document.getElementById('totalSlides');
+  var prevButton = document.getElementById('prevSlide');
+  var nextButton = document.getElementById('nextSlide');
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.nav-link'));
+  var goButtons = Array.prototype.slice.call(document.querySelectorAll('[data-go]'));
+  var menuButton = document.querySelector('.menu-toggle');
+  var mobileMenu = document.getElementById('mobileMenu');
+  var current = 0;
+  var wheelTotal = 0;
+  var wheelLocked = false;
+  var wheelIdleTimer = 0;
+  var touchStartY = 0;
+  var touchStartX = 0;
+
+  function resetMobileScroll(){
+    if(!window.matchMedia('(max-width: 860px)').matches) return;
+    window.scrollTo(0,0);
+    window.requestAnimationFrame(function(){ window.scrollTo(0,0); });
+  }
+
+  totalLabel.textContent = String(slides.length).padStart(2,'0');
+
+  function activeRangeMatches(range){
+    if(!range) return false;
+    var parts = range.split('-');
+    if(parts.length === 2) return current >= Number(parts[0]) && current <= Number(parts[1]);
+    return Number(range) === current;
+  }
+
+  function updateNavigation(){
+    navLinks.forEach(function(link){
+      if(activeRangeMatches(link.getAttribute('data-range'))) link.setAttribute('aria-current','page');
+      else link.removeAttribute('aria-current');
+    });
+    currentLabel.textContent = String(current + 1).padStart(2,'0');
+    progressBar.style.transform = 'scaleX(' + ((current + 1) / slides.length) + ')';
+    prevButton.disabled = current === 0;
+    nextButton.disabled = current === slides.length - 1;
+  }
+
+  function goTo(index, focusDeck){
+    var target = Math.max(0,Math.min(slides.length - 1,index));
+    if(target === current){
+      if(focusDeck) deck.focus({preventScroll:true});
+      return false;
+    }
+    slides[current].classList.remove('is-active');
+    slides[current].classList.add('is-before');
+    slides[current].setAttribute('aria-hidden','true');
+    slides[current].inert = true;
+    current = target;
+    slides[current].classList.remove('is-before');
+    slides[current].classList.add('is-active');
+    slides[current].setAttribute('aria-hidden','false');
+    slides[current].inert = false;
+    slides[current].scrollTop = 0;
+    resetMobileScroll();
+    updateNavigation();
+    if(window.history && window.history.replaceState){
+      window.history.replaceState(null,'','#' + slides[current].id);
+    }
+    if(focusDeck) deck.focus({preventScroll:true});
+    return true;
+  }
+
+  function closeMenu(){
+    document.body.classList.remove('menu-open');
+    menuButton.setAttribute('aria-expanded','false');
+    menuButton.setAttribute('aria-label','打开导航');
+    mobileMenu.setAttribute('aria-hidden','true');
+  }
+
+  menuButton.addEventListener('click',function(){
+    var open = !document.body.classList.contains('menu-open');
+    document.body.classList.toggle('menu-open',open);
+    menuButton.setAttribute('aria-expanded',String(open));
+    menuButton.setAttribute('aria-label',open ? '关闭导航' : '打开导航');
+    mobileMenu.setAttribute('aria-hidden',String(!open));
+  });
+
+  goButtons.forEach(function(button){
+    button.addEventListener('click',function(event){
+      event.preventDefault();
+      goTo(Number(button.getAttribute('data-go')),true);
+      closeMenu();
+    });
+  });
+
+  prevButton.addEventListener('click',function(){ goTo(current - 1,true); });
+  nextButton.addEventListener('click',function(){ goTo(current + 1,true); });
+
+  function slideCanScroll(direction){
+    if(window.matchMedia('(max-width: 860px)').matches){
+      var root = document.scrollingElement || document.documentElement;
+      var maxScroll = Math.max(0, root.scrollHeight - window.innerHeight);
+      if(direction > 0) return window.scrollY < maxScroll - 2;
+      return window.scrollY > 2;
+    }
+    var slide = slides[current];
+    if(slide.scrollHeight <= slide.clientHeight + 2) return false;
+    if(direction > 0) return slide.scrollTop + slide.clientHeight < slide.scrollHeight - 2;
+    return slide.scrollTop > 2;
+  }
+
+  deck.addEventListener('wheel',function(event){
+    if(wheelLocked){ event.preventDefault(); return; }
+    if(slideCanScroll(event.deltaY)) return;
+    event.preventDefault();
+    wheelTotal += event.deltaY;
+    window.clearTimeout(wheelIdleTimer);
+    wheelIdleTimer = window.setTimeout(function(){ wheelTotal = 0; },160);
+    if(Math.abs(wheelTotal) < 42) return;
+    var direction = wheelTotal > 0 ? 1 : -1;
+    goTo(current + direction,false);
+    wheelTotal = 0;
+    wheelLocked = true;
+    window.setTimeout(function(){ wheelLocked = false; },220);
+  },{passive:false});
+
+  document.addEventListener('keydown',function(event){
+    if(event.key === 'Escape' && document.body.classList.contains('menu-open')){ closeMenu(); return; }
+    if(document.body.classList.contains('menu-open')) return;
+    if(event.target.closest && event.target.closest('a,button,summary,details,input,textarea,select')) return;
+    if(['ArrowDown','PageDown',' '].indexOf(event.key) !== -1){ event.preventDefault(); goTo(current + 1,false); }
+    else if(['ArrowUp','PageUp'].indexOf(event.key) !== -1){ event.preventDefault(); goTo(current - 1,false); }
+    else if(event.key === 'Home'){ event.preventDefault(); goTo(0,false); }
+    else if(event.key === 'End'){ event.preventDefault(); goTo(slides.length - 1,false); }
+  });
+
+  deck.addEventListener('touchstart',function(event){
+    if(event.touches.length !== 1) return;
+    touchStartY = event.touches[0].clientY;
+    touchStartX = event.touches[0].clientX;
+  },{passive:true});
+
+  deck.addEventListener('touchend',function(event){
+    if(event.changedTouches.length !== 1) return;
+    var deltaY = touchStartY - event.changedTouches[0].clientY;
+    var deltaX = touchStartX - event.changedTouches[0].clientX;
+    if(Math.abs(deltaY) < 56 || Math.abs(deltaY) <= Math.abs(deltaX)) return;
+    if(slideCanScroll(deltaY)) return;
+    goTo(current + (deltaY > 0 ? 1 : -1),false);
+  },{passive:true});
+
+  var hashIndex = slides.findIndex(function(slide){ return '#' + slide.id === window.location.hash; });
+  if(hashIndex > 0){
+    slides[0].classList.remove('is-active');
+    slides[0].setAttribute('aria-hidden','true');
+    slides[0].inert = true;
+    current = hashIndex;
+    slides[current].classList.add('is-active');
+    slides[current].setAttribute('aria-hidden','false');
+    slides[current].inert = false;
+  }
+  resetMobileScroll();
+  updateNavigation();
+})();
+</script>
+
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"SoftwareApplication",
+  "name":"DebDeck",
+  "applicationCategory":"UtilitiesApplication",
+  "operatingSystem":"Ubuntu",
+  "description":"基于 Rust 与 GPUI 的原生 Ubuntu APT/dpkg 应用管理器，支持软件目录、应用启动与卸载、安装包下载和离线重建。",
+  "url":"https://mangerle.github.io/debdeck/",
+  "downloadUrl":"https://github.com/mangerle/debdeck/releases/latest",
+  "codeRepository":"https://github.com/mangerle/debdeck",
+  "license":"https://github.com/mangerle/debdeck/blob/main/LICENSE",
+  "offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"}
+}
+</script>
+</body>
+</html>
