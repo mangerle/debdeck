@@ -45,7 +45,7 @@ cargo deb --locked --no-build
 ```
 
 The package version comes from `[package].version`; the Debian revision is
-intentionally empty, so the output is `0.1.0`, not `0.1.0-1`.
+intentionally empty, so the output is `0.2.0`, not `0.2.0-1`.
 
 ## Dependency policy
 

@@ -43,8 +43,8 @@ cargo build --locked --release
 cargo deb --locked --no-build
 ```
 
-包版本来自 `[package].version`；Debian 修订号被刻意留空，因此产物版本是 `0.1.0`
-而不是 `0.1.0-1`。
+包版本来自 `[package].version`；Debian 修订号被刻意留空，因此产物版本是 `0.2.0`
+而不是 `0.2.0-1`。
 
 ## 依赖策略
 

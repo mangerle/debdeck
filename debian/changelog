@@ -1,3 +1,15 @@
+debdeck (0.2.0) unstable; urgency=medium
+
+  * 按项目工程规范完成全仓整改。
+  * 后端统一使用 thiserror 强类型错误契约，移除直接 anyhow 依赖。
+  * 通道改为显式容量的有界队列，完善线程、任务、子进程和认证会话生命周期。
+  * APT 索引改为逐段流式解析，降低大型索引的峰值内存占用。
+  * 网络客户端全局复用，并补充 HTTP、子进程和 D-Bus 超时。
+  * 拆分超长源码与函数，清理全限定类型和无效平台条件分支。
+  * 界面目录打开与菜单文件操作迁移至后台执行器。
+
+ -- wangle <wangle@agree.com.cn>  Thu, 19 Nov 2026 10:00:00 +0800
+
 debdeck (0.1.0) unstable; urgency=medium
 
   * Initial public release.
