@@ -20,7 +20,10 @@ use gpui_kit::component::select::{SearchableVec, SelectState};
 use gpui_kit::{AnyWindowHandle, Entity, RenderImage, Task};
 
 use crate::model::{AppEntry, DesktopEntry, RepoPackage};
-use crate::runtime::{BackendEvent, CancelToken, OperationId, TaskManager};
+use crate::runtime::{
+    AuthPrompt, AuthResponse, BackendEvent, CancelToken, OperationId, TaskManager,
+};
+use crate::ui::password_input::PasswordInputState;
 use crate::util::AppPaths;
 
 use super::catalog::Catalog;
@@ -204,6 +207,8 @@ pub(crate) struct Operation {
     pub(crate) cancel: Option<CancelToken>,
     pub(crate) open_dir: Option<PathBuf>,
     pub(crate) cancel_requested: bool,
+    pub(crate) auth_prompt: Option<AuthPrompt>,
+    pub(crate) auth_responder: Option<async_channel::Sender<AuthResponse>>,
 }
 
 impl Operation {
@@ -221,6 +226,8 @@ impl Operation {
             cancel: None,
             open_dir: None,
             cancel_requested: false,
+            auth_prompt: None,
+            auth_responder: None,
         }
     }
 
@@ -428,6 +435,8 @@ pub(crate) struct DebDeckApp {
     pub(crate) search_input: Entity<InputState>,
     pub(crate) files_input: Entity<InputState>,
     pub(crate) sort_select: SortSelect,
+    /// 操作弹窗内嵌管理员认证使用的无输入法干扰密码框。
+    pub(crate) operation_password_input: Entity<PasswordInputState>,
     /// 所属主窗口句柄，用于在无 `&mut Window` 上下文中异步重置输入框等 UI 控件。
     pub(crate) window_handle: AnyWindowHandle,
     /// 详情页「文件」标签页状态。

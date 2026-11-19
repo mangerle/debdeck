@@ -48,6 +48,7 @@ use gpui_kit::*;
 
 use crate::runtime::{BackendEvent, TaskManager, Waker};
 use crate::ui::DETAIL_ICON_TEXTURE_SIZE;
+use crate::ui::password_input::{PasswordInputEvent, PasswordInputState};
 use crate::util::AppPaths;
 
 use bootstrap::{bind_refresh_action, create_inputs, create_sort_select, sort_from_label};
@@ -146,6 +147,13 @@ impl DebDeckApp {
         let (tasks, rx, wake_rx) = start_backend();
         let (search_input, files_input) = create_inputs(window, cx);
         let sort_select = create_sort_select(window, cx);
+        let operation_password_input = cx.new(PasswordInputState::new);
+        cx.subscribe(&operation_password_input, |app, _, event, cx| {
+            if matches!(event, PasswordInputEvent::Submit) {
+                app.submit_operation_password(cx);
+            }
+        })
+        .detach();
         observe_inputs(&search_input, &files_input, &sort_select, cx);
         spawn_event_loop(wake_rx, cx, |app, (), cx| {
             app.poll_events(cx);
@@ -165,6 +173,7 @@ impl DebDeckApp {
             search_input,
             files_input,
             sort_select,
+            operation_password_input,
             window_handle: window.window_handle(),
             files_state: DetailFilesState::new(),
             toast_generation: 0,
@@ -339,6 +348,30 @@ impl DebDeckApp {
         self.ensure_files();
         self.ensure_selected_icon();
         cx.notify();
+    }
+
+    /// 提交当前操作弹窗里的管理员密码。
+    pub(crate) fn submit_operation_password(&mut self, cx: &mut Context<Self>) {
+        let password = self.operation_password_input.read(cx).value().to_string();
+        if self.dialogs.submit_operation_password(password) {
+            self.operation_password_input
+                .update(cx, PasswordInputState::clear);
+            cx.notify();
+        }
+    }
+
+    /// 异步清空并聚焦操作弹窗密码输入框。
+    pub(crate) fn reset_and_focus_operation_password(&mut self, cx: &mut Context<Self>) {
+        self.operation_password_input
+            .update(cx, PasswordInputState::clear);
+        let window_handle = self.window_handle;
+        let input = self.operation_password_input.clone();
+        cx.spawn(async move |_, cx| {
+            let _ = window_handle.update(cx, |_, window, cx| {
+                input.update(cx, |state, cx| state.focus(window, cx));
+            });
+        })
+        .detach();
     }
 
     /// 显示一条自动消失的提示。旧的清理任务靠代次判断，不会误清新提示。

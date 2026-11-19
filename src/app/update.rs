@@ -11,6 +11,7 @@ use gpui_kit::Context;
 
 use crate::app::state::DebDeckApp;
 use crate::runtime::{BackendEvent, RefreshScope};
+use crate::ui::password_input::PasswordInputState;
 
 impl DebDeckApp {
     pub(crate) fn poll_events(&mut self, cx: &mut Context<Self>) {
@@ -45,6 +46,24 @@ impl DebDeckApp {
             } => {
                 self.dialogs
                     .record_operation_progress(id, message, progress);
+            }
+            BackendEvent::OperationAuthPrompt {
+                id,
+                prompt,
+                responder,
+            } => {
+                if self
+                    .dialogs
+                    .record_operation_auth_prompt(id, prompt, responder)
+                {
+                    self.reset_and_focus_operation_password(cx);
+                }
+            }
+            BackendEvent::OperationAuthorized { id } => {
+                if self.dialogs.record_operation_authorized(id) {
+                    self.operation_password_input
+                        .update(cx, PasswordInputState::clear);
+                }
             }
             BackendEvent::OperationFinished {
                 id,

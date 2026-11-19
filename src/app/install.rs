@@ -23,10 +23,10 @@ use crate::runtime::install::{
     AuthResponse, InstallEvent, InstallSession, InstalledStatus, find_launchable_desktop,
     inspect_deb_file, launch_installed, start_install_session,
 };
-use crate::ui::install::password_input::{PasswordInputEvent, PasswordInputState};
 use crate::ui::install::{
     ACTION_BAR_HEIGHT, CONTENT_PADDING, CONTENT_SLACK, HEADER_HEIGHT, STEP_BAR_HEIGHT,
 };
+use crate::ui::password_input::{PasswordInputEvent, PasswordInputState};
 
 /// 安装窗口的最小高度，与初始窗口高度保持一致以避免阶段切换时窗口跳动闪烁。
 pub(super) const MIN_WINDOW_HEIGHT: f32 = 410.0;
