@@ -34,6 +34,7 @@ use crate::backend::fs_layout::FsLayout;
 use crate::deb822::Stanza;
 use crate::model::InstalledPackage;
 use crate::util::{command_exists, run_command, sanitize_file_component};
+use tempfile::Builder as TempDirBuilder;
 
 /// 重打包结果。
 #[derive(Clone, Debug)]
@@ -85,17 +86,18 @@ pub fn build_package(mut options: BuildOptions<'_>) -> Result<BuildOutcome> {
     .unwrap_or_else(Stanza::default);
 
     (options.progress)("正在准备构建目录…");
-    let work = temp_work_dir(&package.metadata.name);
-    if work.exists() {
-        let _ = fs::remove_dir_all(&work);
-    }
-    fs::create_dir_all(&work)
-        .map_err(|source| BackendError::io("创建构建目录", work.display(), source))?;
+    let prefix = format!(
+        "debdeck-build-{}-",
+        sanitize_file_component(&package.metadata.name)
+    );
+    let work = TempDirBuilder::new()
+        .prefix(&prefix)
+        .tempdir()
+        .map_err(|source| {
+            BackendError::io("创建构建目录", std::env::temp_dir().display(), source)
+        })?;
 
-    // 用闭包 + 立即清理代替 defer，保证任何提前返回都不会留下临时目录。
-    let result = build_in_work_dir(&mut options, &package_files, &control, &work);
-    let _ = fs::remove_dir_all(&work);
-    result
+    build_in_work_dir(&mut options, &package_files, &control, work.path())
 }
 
 fn build_in_work_dir(
@@ -145,15 +147,6 @@ fn build_in_work_dir(
 
 /// 每个复制这么多项上报一次进度；重打包的文件量可能上千，逐条上报会把事件通道淹掉。
 pub(crate) const PROGRESS_EVERY: usize = 100;
-
-/// 临时工作目录。带上包名与进程号，便于排查残留，同时避免并发实例互相覆盖。
-fn temp_work_dir(pkg_name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "debdeck-build-{}-{}",
-        sanitize_file_component(pkg_name),
-        std::process::id()
-    ))
-}
 
 #[derive(Clone, Copy)]
 struct DpkgBuild<'a> {
