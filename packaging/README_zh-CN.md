@@ -44,8 +44,8 @@ cargo build --locked --release
 cargo deb --locked --no-build --fast --compress-type xz
 ```
 
-包版本来自 `[package].version`；Debian 修订号被刻意留空，因此产物版本是 `0.2.1`
-而不是 `0.2.1-1`。
+包版本来自 `[package].version`；Debian 修订号被刻意留空，因此产物版本是 `0.3.0`
+而不是 `0.3.0-1`。
 
 发布构建采用体积优先配置：`opt-level=z`、fat LTO、单 codegen unit、符号裁剪，
 并保留默认 unwind panic 策略，确保后台线程 panic 隔离继续有效。安装包使用
