@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::backend::{BackendError, Result};
 
-use crate::util::{command_exists, run_command, run_command_streaming};
+use crate::util::{command_exists, run_command};
 
 use super::deb_file;
 
@@ -50,24 +50,13 @@ fn ensure_package_name(pkg: &str) -> Result<()> {
 /// 下没有 tty，会直接卡死）。退出码 126/127 通常意味着用户在 polkit 弹窗里
 /// 取消或系统缺少认证代理，额外给出提示。
 fn run_privileged(args: &[&str]) -> Result<String> {
-    run_privileged_impl(args, None)
-}
-
-fn run_privileged_streaming(args: &[&str], on_line: &mut dyn FnMut(&str)) -> Result<String> {
-    run_privileged_impl(args, Some(on_line))
-}
-
-fn run_privileged_impl(args: &[&str], on_line: Option<&mut dyn FnMut(&str)>) -> Result<String> {
     if !command_exists("pkexec") {
         return Err(BackendError::missing_program("请求管理员权限", "pkexec"));
     }
     let mut command = Command::new("pkexec");
     command.args(args).env("DEBIAN_FRONTEND", "noninteractive");
-    let output = match on_line {
-        Some(callback) => run_command_streaming(&mut command, Duration::from_mins(30), callback),
-        None => run_command(&mut command, Duration::from_mins(30)),
-    }
-    .map_err(|source| BackendError::command("请求管理员权限", source))?;
+    let output = run_command(&mut command, Duration::from_mins(30))
+        .map_err(|source| BackendError::command("请求管理员权限", source))?;
 
     let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -104,78 +93,78 @@ fn failure_hint(code: i32, text: &str) -> &'static str {
     }
 }
 
-/// 卸载软件包（保留依赖处理给 apt）。
-pub fn uninstall_package(pkg: &str) -> Result<()> {
+/// 构造卸载软件包的提权命令参数（不含 `pkexec`）。
+///
+/// # Errors
+/// 包名不合法时返回错误。
+pub fn uninstall_args(pkg: &str) -> Result<Vec<String>> {
     ensure_package_name(pkg)?;
-    run_privileged(&["apt-get", "remove", "-y", pkg])?;
-    Ok(())
+    Ok(vec![
+        "/usr/bin/apt-get".to_string(),
+        "remove".to_string(),
+        "-y".to_string(),
+        pkg.to_string(),
+    ])
 }
 
-/// 保持或取消保持软件包版本。
-pub fn set_hold_state(pkg: &str, hold: bool) -> Result<()> {
+/// 构造保持或取消保持软件包版本的提权命令参数（不含 `pkexec`）。
+///
+/// # Errors
+/// 包名不合法时返回错误。
+pub fn hold_args(pkg: &str, hold: bool) -> Result<Vec<String>> {
     ensure_package_name(pkg)?;
     let action = if hold { "hold" } else { "unhold" };
-    run_privileged(&["apt-mark", action, pkg])?;
-    Ok(())
+    Ok(vec![
+        "/usr/bin/apt-mark".to_string(),
+        action.to_string(),
+        pkg.to_string(),
+    ])
 }
 
-/// 同步 APT 软件源索引（`apt-get update`）。
-///
-/// # Errors
-/// 提权失败、APT 锁被占用或网络错误时返回 [`BackendError`]。
-pub fn apt_update(on_line: &mut dyn FnMut(&str)) -> Result<()> {
-    run_privileged_streaming(
-        &["/usr/bin/apt-get", "update", "-o", "DPkg::Lock::Timeout=10"],
-        on_line,
-    )?;
-    Ok(())
+/// 构造同步 APT 软件源索引的提权命令参数（不含 `pkexec`）。
+pub fn apt_update_args() -> Vec<String> {
+    vec![
+        "/usr/bin/apt-get".to_string(),
+        "update".to_string(),
+        "-o".to_string(),
+        "DPkg::Lock::Timeout=10".to_string(),
+    ]
 }
 
-/// 升级全部可升级软件包（`apt-get upgrade`）。
-///
-/// # Errors
-/// 提权失败、APT 锁被占用或升级过程出错时返回 [`BackendError`]。
-pub fn upgrade_all(on_line: &mut dyn FnMut(&str)) -> Result<()> {
-    run_privileged_streaming(
-        &[
-            "/usr/bin/apt-get",
-            "upgrade",
-            "-y",
-            "-o",
-            "DPkg::Lock::Timeout=10",
-            "-o",
-            "Dpkg::Options::=--force-confdef",
-            "-o",
-            "Dpkg::Options::=--force-confold",
-        ],
-        on_line,
-    )?;
-    Ok(())
+/// 构造升级全部可升级软件包的提权命令参数（不含 `pkexec`）。
+pub fn upgrade_all_args() -> Vec<String> {
+    vec![
+        "/usr/bin/apt-get".to_string(),
+        "upgrade".to_string(),
+        "-y".to_string(),
+        "-o".to_string(),
+        "DPkg::Lock::Timeout=10".to_string(),
+        "-o".to_string(),
+        "Dpkg::Options::=--force-confdef".to_string(),
+        "-o".to_string(),
+        "Dpkg::Options::=--force-confold".to_string(),
+    ]
 }
 
-/// 仅升级指定已安装软件包（`apt-get install --only-upgrade`）。
+/// 构造单包升级的提权命令参数（不含 `pkexec`）。
 ///
 /// # Errors
-/// 包名校验失败、提权失败、APT 锁被占用或升级过程出错时返回 [`BackendError`]。
-pub fn upgrade_package(pkg: &str, on_line: &mut dyn FnMut(&str)) -> Result<()> {
+/// 包名不合法时返回错误。
+pub fn upgrade_package_args(pkg: &str) -> Result<Vec<String>> {
     ensure_package_name(pkg)?;
-    run_privileged_streaming(
-        &[
-            "/usr/bin/apt-get",
-            "install",
-            "--only-upgrade",
-            "-y",
-            "-o",
-            "DPkg::Lock::Timeout=10",
-            "-o",
-            "Dpkg::Options::=--force-confdef",
-            "-o",
-            "Dpkg::Options::=--force-confold",
-            pkg,
-        ],
-        on_line,
-    )?;
-    Ok(())
+    Ok(vec![
+        "/usr/bin/apt-get".to_string(),
+        "install".to_string(),
+        "--only-upgrade".to_string(),
+        "-y".to_string(),
+        "-o".to_string(),
+        "DPkg::Lock::Timeout=10".to_string(),
+        "-o".to_string(),
+        "Dpkg::Options::=--force-confdef".to_string(),
+        "-o".to_string(),
+        "Dpkg::Options::=--force-confold".to_string(),
+        pkg.to_string(),
+    ])
 }
 
 /// 本地安装的 apt-get 参数（不含 `pkexec`）。
@@ -233,10 +222,10 @@ mod tests {
     fn rejects_injection_before_invoking_pkexec() {
         // 恶意包名必须在任何子进程启动前被拒绝（沙箱里 pkexec 未必存在，
         // 因此这里只断言错误信息本身）。
-        let error = set_hold_state("bad;rm -rf /", true).unwrap_err();
+        let error = hold_args("bad;rm -rf /", true).unwrap_err();
         assert!(error.to_string().contains("无效的软件包名称"), "{error}");
 
-        let error = upgrade_package("bad;rm -rf /", &mut |_| {}).unwrap_err();
+        let error = upgrade_package_args("bad;rm -rf /").unwrap_err();
         assert!(error.to_string().contains("无效的软件包名称"), "{error}");
     }
 

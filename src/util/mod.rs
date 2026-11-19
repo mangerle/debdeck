@@ -25,7 +25,7 @@ pub use deb_version::debian_version_cmp;
 pub use desktop_exec::desktop_exec_args;
 pub use format::{format_bytes, format_kib, format_time, hex_lower};
 pub use paths::{AppPaths, home_dir};
-pub(crate) use process::{CommandError, run_command, run_command_streaming, wait_child};
+pub(crate) use process::{CommandError, run_command, wait_child};
 pub use search::{build_search_text, matches_tokens, query_tokens};
 pub use system::{command_exists, current_arch};
 pub use throttle::Throttle;

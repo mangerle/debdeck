@@ -56,10 +56,16 @@ pub(super) enum AuthOutcome {
     Cancelled,
 }
 
-/// 启动一次安装控制器所需的上下文。
+/// 会话结束时的成功文案与桌面通知配置。
+pub(super) struct SessionOutcome {
+    pub(super) success_message: String,
+    pub(super) notify: Option<(String, String)>,
+}
+
+/// 启动一次控制器的完整上下文。
 pub(super) struct ControllerInput<'a> {
     pub(super) args: Vec<String>,
-    pub(super) pkg: String,
+    pub(super) outcome: SessionOutcome,
     pub(super) events: async_channel::Sender<InstallEvent>,
     pub(super) responses: async_channel::Receiver<AuthResponse>,
     pub(super) stop: &'a AtomicBool,
@@ -92,7 +98,10 @@ pub(super) fn run_from_path(session: PathSession<'_>) {
     };
     run_controller(ControllerInput {
         args,
-        pkg,
+        outcome: SessionOutcome {
+            success_message: format!("软件包 {pkg} 已安装。"),
+            notify: Some(("应用已安装".to_string(), pkg)),
+        },
         events,
         responses,
         stop,
@@ -103,7 +112,7 @@ pub(super) fn run_from_path(session: PathSession<'_>) {
 pub(super) fn run_controller(input: ControllerInput<'_>) {
     let ControllerInput {
         args,
-        pkg,
+        outcome,
         events,
         responses,
         stop,
@@ -116,7 +125,7 @@ pub(super) fn run_controller(input: ControllerInput<'_>) {
         Ok(registration) => registration,
         Err(error) => {
             tracing::warn!("内嵌认证不可用，回退系统认证窗口：{error}");
-            fallback_to_system(&args, &pkg, &events);
+            fallback_to_system(&args, &outcome, &events);
             return;
         }
     };
@@ -131,7 +140,7 @@ pub(super) fn run_controller(input: ControllerInput<'_>) {
     let _timeout_guard = TimeoutGuard::start(INSTALL_TIMEOUT, ctrl_tx.clone());
 
     let mut controller = Controller {
-        pkg,
+        outcome,
         events,
         ctrl_tx,
         stop,
@@ -157,16 +166,22 @@ fn current_subject(events: &async_channel::Sender<InstallEvent>) -> Option<(u32,
     Some((pid, start_time, uid))
 }
 
-fn fallback_to_system(args: &[String], pkg: &str, events: &async_channel::Sender<InstallEvent>) {
+fn fallback_to_system(
+    args: &[String],
+    outcome: &SessionOutcome,
+    events: &async_channel::Sender<InstallEvent>,
+) {
     send_install_event(
         events,
         InstallEvent::Notice("无法内嵌管理员认证，已改用系统密码窗口。".to_string()),
     );
     let result = privileged::run_privileged_argv(args)
-        .map(|_| format!("软件包 {pkg} 已安装。"))
+        .map(|_| outcome.success_message.clone())
         .map_err(|error| error.to_string());
-    if result.is_ok() {
-        shell::notify("应用已安装", pkg);
+    if result.is_ok()
+        && let Some((title, body)) = outcome.notify.as_ref()
+    {
+        shell::notify(title, body);
     }
     send_finished(events, result);
 }
@@ -179,7 +194,7 @@ struct AuthBegin {
 }
 
 struct Controller<'a> {
-    pkg: String,
+    outcome: SessionOutcome,
     events: async_channel::Sender<InstallEvent>,
     ctrl_tx: async_channel::Sender<ControllerEvent>,
     stop: &'a AtomicBool,
@@ -376,9 +391,11 @@ impl Controller<'_> {
     fn finish(&mut self, process: &mut PkexecProcess, exit: &ProcessExit) {
         // 先回收输出线程，再释放进程组，避免返回后仍有线程持有管道。
         process.terminate();
-        let result = install_result(&self.pkg, exit);
-        if result.is_ok() {
-            shell::notify("应用已安装", &self.pkg);
+        let result = command_result(&self.outcome.success_message, exit);
+        if result.is_ok()
+            && let Some((title, body)) = self.outcome.notify.as_ref()
+        {
+            shell::notify(title, body);
         }
         resolve_auth(
             &mut self.pending_auth,
@@ -388,15 +405,25 @@ impl Controller<'_> {
     }
 }
 
-fn install_result(pkg: &str, exit: &ProcessExit) -> Result<String, String> {
+fn command_result(success_message: &str, exit: &ProcessExit) -> Result<String, String> {
     if exit.status.success() {
-        return Ok(format!("软件包 {pkg} 已安装。"));
+        return Ok(success_message.to_string());
     }
     let code = exit.status.code().unwrap_or(-1);
-    if exit.output.is_empty() {
-        Err(format!("安装失败（退出码 {code}）。"))
+    let lock_hint = if exit.output.contains("Could not get lock")
+        || exit.output.contains("Unable to acquire")
+    {
+        "\n提示：APT 正被其他进程占用，请等待系统更新或终端 apt 操作完成后重试。"
     } else {
-        Err(format!("安装失败（退出码 {code}）：\n{}", exit.output))
+        ""
+    };
+    if exit.output.is_empty() {
+        Err(format!("操作失败（退出码 {code}）。{lock_hint}"))
+    } else {
+        Err(format!(
+            "操作失败（退出码 {code}）：\n{}{lock_hint}",
+            exit.output
+        ))
     }
 }
 

@@ -61,6 +61,7 @@ pub enum InstallEvent {
 }
 
 /// PAM 提示与 polkit 动作说明。
+#[derive(Debug)]
 pub struct AuthPrompt {
     /// polkit 给出的动作说明（可能为空）。
     pub message: String,
@@ -103,6 +104,46 @@ impl Drop for InstallSession {
             tracing::error!("安装控制线程发生 panic，已隔离");
         }
     }
+}
+
+/// 启动通用提权会话：所有工作都在后台线程，UI 只消费事件并按需提交密码回执。
+///
+/// # Errors
+/// 后台控制线程无法创建时返回错误。
+pub fn start_privileged(
+    args: Vec<String>,
+    success_message: impl Into<String>,
+    notify: Option<(String, String)>,
+) -> BackendResult<InstallSession> {
+    let success_message = success_message.into();
+    let (events, event_rx) = async_channel::bounded(INSTALL_EVENT_CAPACITY);
+    let (response_tx, response_rx) = async_channel::bounded(AUTH_RESPONSE_CAPACITY);
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let handle = thread::Builder::new()
+        .name("debdeck-privileged".to_string())
+        .spawn(move || {
+            controller::run_controller(controller::ControllerInput {
+                args,
+                outcome: controller::SessionOutcome {
+                    success_message,
+                    notify,
+                },
+                events,
+                responses: response_rx,
+                stop: &thread_stop,
+            });
+        })
+        .map_err(|error| BackendError::Thread {
+            operation: "创建提权控制线程",
+            detail: error.to_string(),
+        })?;
+    Ok(InstallSession {
+        events: event_rx,
+        responses: response_tx,
+        stop,
+        handle: Some(handle),
+    })
 }
 
 /// 启动安装会话：所有工作都在后台线程，UI 只消费事件。
