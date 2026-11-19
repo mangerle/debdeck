@@ -64,18 +64,25 @@ impl PkexecProcess {
             return Err(BackendError::missing_program("启动管理员认证", "pkexec"));
         }
         let mut command = Command::new(pkexec);
+        command.arg("--disable-internal-agent").args(args);
+        Self::spawn_command(command, pkexec, events)
+    }
+
+    fn spawn_command(
+        mut command: Command,
+        program: &str,
+        events: async_channel::Sender<ControllerEvent>,
+    ) -> Result<Self> {
         command
-            .arg("--disable-internal-agent")
-            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
         let mut child = command.spawn().map_err(|source| {
             BackendError::command(
-                "启动 pkexec",
+                "启动管理员操作进程",
                 CommandError::Spawn {
-                    command: pkexec.to_string(),
+                    command: program.to_string(),
                     source,
                 },
             )
@@ -409,5 +416,19 @@ mod tests {
             rx.try_recv(),
             Ok(ControllerEvent::ProcessOutput(line)) if line == "已占用"
         ));
+    }
+
+    #[test]
+    fn terminate_reaps_long_running_process() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let (events, _rx) = async_channel::bounded(8);
+        let mut process = PkexecProcess::spawn_command(command, "sleep", events).unwrap();
+
+        let started = std::time::Instant::now();
+        process.terminate();
+
+        assert!(process.reaped.load(Ordering::Acquire), "长任务必须被回收");
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

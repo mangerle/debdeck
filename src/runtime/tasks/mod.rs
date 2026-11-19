@@ -425,3 +425,33 @@ impl Drop for TaskManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[test]
+    fn dropping_manager_closes_registered_privileged_session() {
+        let root = std::env::temp_dir().join(format!("debdeck-task-stop-{}", process::id()));
+        let (manager, _events) = TaskManager::start(Arc::new(|| {}), FsLayout::with_root(&root));
+        let (response_tx, response_rx) = async_channel::bounded(1);
+        if let Ok(mut slot) = manager.active_privileged.lock() {
+            *slot = Some(response_tx);
+        }
+
+        let started = Instant::now();
+        drop(manager);
+
+        assert!(
+            response_rx.recv_blocking().is_err(),
+            "管理器析构必须关闭活跃提权会话通道"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "停机不应长时间阻塞"
+        );
+    }
+}

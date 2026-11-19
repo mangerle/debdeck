@@ -94,3 +94,23 @@ impl Drop for TimeoutGuard {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_response_sender_wakes_forwarder_with_stop() {
+        let (response_tx, response_rx) = async_channel::bounded(1);
+        let (ctrl_tx, ctrl_rx) = async_channel::bounded(1);
+        let forwarder = ResponseForwarder::start(response_rx, ctrl_tx);
+
+        drop(response_tx);
+
+        assert!(
+            matches!(ctrl_rx.recv_blocking(), Ok(ControllerEvent::Stop)),
+            "关闭回执通道必须唤醒控制器停止"
+        );
+        drop(forwarder);
+    }
+}
