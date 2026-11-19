@@ -200,6 +200,38 @@ pub(crate) struct Operation {
 }
 
 impl Operation {
+    pub(crate) fn new(
+        id: OperationId,
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            message: message.into(),
+            progress: None,
+            result: None,
+            cancel: None,
+            open_dir: None,
+            cancel_requested: false,
+        }
+    }
+
+    pub(crate) fn with_progress(mut self, progress: (u64, u64)) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    pub(crate) fn with_cancel(mut self, cancel: CancelToken) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    pub(crate) fn with_open_dir(mut self, open_dir: PathBuf) -> Self {
+        self.open_dir = Some(open_dir);
+        self
+    }
+
     pub(crate) fn is_running(&self) -> bool {
         self.result.is_none()
     }

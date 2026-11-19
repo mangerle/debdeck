@@ -172,50 +172,29 @@ impl DebDeckApp {
     }
 
     pub(crate) fn start_uninstall(&mut self, pkg: String, name: &str) {
-        let id = match self.tasks.uninstall(pkg) {
-            Ok(id) => id,
-            Err(error) => {
-                self.dialogs
-                    .set_message("无法卸载软件包", error.to_string());
-                return;
-            }
+        let Ok(id) = self.submit_or_alert("无法卸载软件包", self.tasks.uninstall(pkg))
+        else {
+            return;
         };
-        self.dialogs.begin_operation(Operation {
+        self.dialogs.begin_operation(Operation::new(
             id,
-            title: format!("卸载 {name}"),
-            message: "正在请求管理员授权并卸载…".to_string(),
-            progress: None,
-            result: None,
-            cancel: None,
-            open_dir: None,
-            cancel_requested: false,
-        });
+            format!("卸载 {name}"),
+            "正在请求管理员授权并卸载…",
+        ));
     }
 
     pub(crate) fn start_hold(&mut self, pkg: String, name: &str, hold: bool) {
-        let id = match self.tasks.hold(pkg, hold) {
-            Ok(id) => id,
-            Err(error) => {
-                self.dialogs
-                    .set_message("无法修改版本状态", error.to_string());
-                return;
-            }
+        let Ok(id) = self.submit_or_alert("无法修改版本状态", self.tasks.hold(pkg, hold))
+        else {
+            return;
         };
         let title = if hold {
             format!("保持版本：{name}")
         } else {
             format!("取消保持版本：{name}")
         };
-        self.dialogs.begin_operation(Operation {
-            id,
-            title,
-            message: "正在请求管理员授权…".to_string(),
-            progress: None,
-            result: None,
-            cancel: None,
-            open_dir: None,
-            cancel_requested: false,
-        });
+        self.dialogs
+            .begin_operation(Operation::new(id, title, "正在请求管理员授权…"));
     }
 
     pub(crate) fn start_build(&mut self, pkg: &str, name: &str) {
@@ -225,24 +204,16 @@ impl DebDeckApp {
             return;
         };
         let out_dir = self.paths.builds.clone();
-        let (id, cancel) = match self.tasks.build(package, out_dir.clone()) {
-            Ok(operation) => operation,
-            Err(error) => {
-                self.dialogs
-                    .set_message("无法提取安装包", error.to_string());
-                return;
-            }
+        let Ok((id, cancel)) =
+            self.submit_or_alert("无法提取安装包", self.tasks.build(package, out_dir.clone()))
+        else {
+            return;
         };
-        self.dialogs.begin_operation(Operation {
-            id,
-            title: format!("离线提取安装包：{name}"),
-            message: "正在准备…".to_string(),
-            progress: None,
-            result: None,
-            cancel: Some(cancel),
-            open_dir: Some(out_dir),
-            cancel_requested: false,
-        });
+        self.dialogs.begin_operation(
+            Operation::new(id, format!("离线提取安装包：{name}"), "正在准备…")
+                .with_cancel(cancel)
+                .with_open_dir(out_dir),
+        );
     }
 
     /// `destination` 由对话框计算后传入：预览与落盘必须是同一个路径。
@@ -260,28 +231,30 @@ impl DebDeckApp {
         let open_dir = destination
             .parent()
             .map_or_else(|| self.paths.downloads.clone(), Path::to_path_buf);
-        let (id, cancel) = match self.tasks.download(DownloadRequest {
+        let request = DownloadRequest {
             url,
             destination,
             package_name: package.metadata.name.clone(),
             sha256: (!package.sha256.is_empty()).then_some(package.sha256.clone()),
-        }) {
-            Ok(operation) => operation,
-            Err(error) => {
-                self.dialogs.set_message("无法开始下载", error.to_string());
-                return;
-            }
         };
-        self.dialogs.begin_operation(Operation {
-            id,
-            title: format!("下载 {name}"),
-            message: "正在连接软件源…".to_string(),
-            progress: Some((0, 0)),
-            result: None,
-            cancel: Some(cancel),
-            open_dir: Some(open_dir),
-            cancel_requested: false,
-        });
+        let Ok((id, cancel)) = self.submit_or_alert("无法开始下载", self.tasks.download(request))
+        else {
+            return;
+        };
+        self.dialogs.begin_operation(
+            Operation::new(id, format!("下载 {name}"), "正在连接软件源…")
+                .with_progress((0, 0))
+                .with_cancel(cancel)
+                .with_open_dir(open_dir),
+        );
+    }
+
+    fn submit_or_alert<T, E: std::fmt::Display>(
+        &mut self,
+        title: &str,
+        result: Result<T, E>,
+    ) -> Result<T, ()> {
+        result.map_err(|error| self.dialogs.set_message(title, error.to_string()))
     }
 
     /// 确认框按下「继续」后的分派。
