@@ -24,6 +24,7 @@ pub(crate) fn show(
         loading: app.catalog.repository_loading(),
         has_packages: app.catalog.has_packages(),
         allowed: refresh_allowed(&app.catalog, &app.dialogs),
+        upgradable: summary.upgradable,
     };
     let muted = cx.theme().muted_foreground;
     let border = cx.theme().border;
@@ -100,12 +101,18 @@ struct StatusControls {
     loading: bool,
     has_packages: bool,
     allowed: bool,
+    upgradable: usize,
 }
 
 fn status_controls(controls: StatusControls, cx: &mut Context<DebDeckApp>) -> AnyElement {
     h_flex()
         .gap(px(8.0))
         .items_center()
+        .children(upgrade_all_button(
+            controls.upgradable,
+            controls.allowed,
+            cx,
+        ))
         .child(downloads_button(&controls.downloads, cx))
         .children(warnings_button(controls.warnings, cx))
         .child(repository_status(
@@ -117,6 +124,25 @@ fn status_controls(controls: StatusControls, cx: &mut Context<DebDeckApp>) -> An
             cx,
         ))
         .into_any_element()
+}
+
+fn upgrade_all_button(
+    upgradable: usize,
+    allowed: bool,
+    cx: &mut Context<DebDeckApp>,
+) -> Option<AnyElement> {
+    (upgradable > 0).then(|| {
+        Button::new("upgrade-all")
+            .label(format!("全部更新 ({upgradable})"))
+            .compact()
+            .primary()
+            .disabled(!allowed)
+            .tooltip("使用 apt-get upgrade 更新全部可升级应用")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.handle_action(Action::UpgradeAll, cx);
+            }))
+            .into_any_element()
+    })
 }
 
 fn downloads_button(downloads: &Path, cx: &mut Context<DebDeckApp>) -> AnyElement {

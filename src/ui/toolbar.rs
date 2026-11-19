@@ -36,6 +36,7 @@ pub(crate) fn show(
         // 余下的横向空间留在分类与排序之间，两组控件不挤在一起。
         .child(div().flex_grow(1.0))
         .child(sort_control(app))
+        .child(apt_update_button(allowed, cx))
         .child(refresh_button(allowed, cx))
         .into_any_element()
 }
@@ -59,6 +60,17 @@ fn sort_control(app: &DebDeckApp) -> AnyElement {
         .flex_shrink_0()
         .child(Select::new(&app.sort_select).menu_width(px(160.0)))
         .into_any_element()
+}
+
+fn apt_update_button(allowed: bool, cx: &mut Context<DebDeckApp>) -> Button {
+    Button::new("apt-update")
+        .label("同步软件源")
+        .compact()
+        .disabled(!allowed)
+        .tooltip("执行 apt-get update 同步远端软件源索引")
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.handle_action(Action::AptUpdate, cx);
+        }))
 }
 
 fn refresh_button(allowed: bool, cx: &mut Context<DebDeckApp>) -> Button {

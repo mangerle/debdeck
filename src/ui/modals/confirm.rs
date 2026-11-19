@@ -56,6 +56,22 @@ fn confirm_copy(confirm: &Confirm, paths: &AppPaths) -> ConfirmCopy {
             confirm_label: "开始提取",
             dangerous: false,
         },
+        Confirm::UpgradeAll { count } => ConfirmCopy {
+            title: "全部更新",
+            message: format!(
+                "将通过 APT 升级当前全部 {count} 个可更新的软件包（`apt-get upgrade`）。\n\n已保持版本（Hold）的应用将被自动跳过，过程中可能需要管理员授权。"
+            ),
+            confirm_label: "开始更新",
+            dangerous: false,
+        },
+        Confirm::UpgradePackage { pkg, name } => ConfirmCopy {
+            title: "更新应用",
+            message: format!(
+                "将把「{name}」（软件包 {pkg}）升级到软件源中的最新版本。\n\n可能会同时更新相关的依赖包，过程中可能需要管理员授权。"
+            ),
+            confirm_label: "立即更新",
+            dangerous: false,
+        },
     }
 }
 

@@ -52,6 +52,7 @@ pub(super) fn show_actions(
         .gap(px(8.0))
         .py(px(10.0))
         .child(open_button(context, availability, cx))
+        .children(upgrade_button(context, cx))
         .child(uninstall_button(context, availability, cx))
         .child(hold_button(context, availability, cx))
         .child(div().w(px(1.0)).h(px(18.0)).bg(border).flex_shrink_0())
@@ -123,6 +124,37 @@ fn toggle_menu_visibility(
             cx,
         );
     }
+}
+
+fn upgrade_button(context: &DetailContext, cx: &mut Context<DebDeckApp>) -> Option<AnyElement> {
+    if !context.entry.has_update {
+        return None;
+    }
+    let pkg = context.entry.pkg.clone();
+    let name = context.entry.display_name.clone();
+    let held = context.entry.is_held;
+    let tooltip = if held {
+        "已保持版本，请先取消保持后再更新"
+    } else {
+        "通过 apt-get 更新此应用到最新版本"
+    };
+    Some(
+        Button::new("upgrade-app")
+            .label("更新")
+            .primary()
+            .disabled(held)
+            .tooltip(tooltip)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.handle_action(
+                    Action::UpgradePackage {
+                        pkg: pkg.clone(),
+                        name: name.clone(),
+                    },
+                    cx,
+                );
+            }))
+            .into_any_element(),
+    )
 }
 
 fn uninstall_button(
