@@ -10,6 +10,7 @@
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use flate2::read::GzDecoder;
 use lz4_flex::frame::FrameDecoder;
@@ -169,8 +170,9 @@ fn parse_index_reader(
     base: &str,
     native_arch: &str,
 ) -> io::Result<()> {
+    let shared_base: Arc<str> = Arc::from(base);
     for_each_filtered_stanza(reader, INDEX_FIELDS, |stanza| {
-        parse_stanza_into(repository, &stanza, base, native_arch);
+        parse_stanza_into(repository, &stanza, &shared_base, native_arch);
     })
 }
 
@@ -251,7 +253,7 @@ pub fn parse_index_into(
 fn parse_stanza_into(
     repository: &mut RepositoryData,
     stanza: &crate::deb822::Stanza,
-    base: &str,
+    base: &Arc<str>,
     native_arch: &str,
 ) {
     let arch = stanza
@@ -274,7 +276,7 @@ fn parse_stanza_into(
         return;
     }
     let mut package = RepoPackage::from_stanza(stanza);
-    package.repo_base = base.to_string();
+    package.repo_base = Arc::clone(base);
     repository.record(package);
 }
 
@@ -389,7 +391,7 @@ mod tests {
             demo.download_url().as_deref(),
             Some("https://example.com/ubuntu/pool/main/d/demo.deb")
         );
-        assert_eq!(demo.repo_base, "https://example.com/ubuntu/");
+        assert_eq!(demo.repo_base.as_ref(), "https://example.com/ubuntu/");
 
         // 重复解析同一份索引不会产生第二条记录。
         parse_index_into(

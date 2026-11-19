@@ -66,19 +66,69 @@ fn scan_indexes(
     repository: &mut RepositoryData,
 ) -> IndexScan {
     let mut scan = IndexScan::default();
+    let mut jobs: Vec<(&PathBuf, String)> = Vec::with_capacity(files.len());
     for file in files {
         let Some(file_name) = file.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let Some(base) = resolve_base(file_name, sources, native_arch, &mut scan) else {
-            continue;
-        };
-        if let Err(error) = index::parse_index_file_into(repository, file, &base, native_arch) {
-            tracing::warn!("解析索引 {} 失败：{error}", file.display());
-            scan.read_failures = scan.read_failures.saturating_add(1);
+        if let Some(base) = resolve_base(file_name, sources, native_arch, &mut scan) {
+            jobs.push((file, base));
         }
     }
+
+    if jobs.len() <= 1 {
+        for (file, base) in jobs {
+            if let Err(error) = index::parse_index_file_into(repository, file, &base, native_arch) {
+                tracing::warn!("解析索引 {} 失败：{error}", file.display());
+                scan.read_failures = scan.read_failures.saturating_add(1);
+            }
+        }
+        return scan;
+    }
+
+    scan_indexes_parallel(&jobs, native_arch, repository, &mut scan);
     scan
+}
+
+fn scan_indexes_parallel(
+    jobs: &[(&PathBuf, String)],
+    native_arch: &str,
+    repository: &mut RepositoryData,
+    scan: &mut IndexScan,
+) {
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .clamp(1, 4)
+        .min(jobs.len());
+    let chunk_size = jobs.len().div_ceil(workers);
+    let partials: Vec<(RepositoryData, usize)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = jobs
+            .chunks(chunk_size)
+            .map(|chunk| scope.spawn(move || parse_index_chunk(chunk, native_arch)))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect()
+    });
+
+    for (local, failures) in partials {
+        scan.read_failures = scan.read_failures.saturating_add(failures);
+        repository.merge(local);
+    }
+}
+
+fn parse_index_chunk(chunk: &[(&PathBuf, String)], native_arch: &str) -> (RepositoryData, usize) {
+    let mut local = RepositoryData::default();
+    let mut failures = 0usize;
+    for (file, base) in chunk {
+        if let Err(error) = index::parse_index_file_into(&mut local, file, base, native_arch) {
+            tracing::warn!("解析索引 {} 失败：{error}", file.display());
+            failures = failures.saturating_add(1);
+        }
+    }
+    (local, failures)
 }
 
 fn resolve_base(

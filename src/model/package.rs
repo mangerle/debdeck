@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::deb822::Stanza;
@@ -125,13 +126,25 @@ impl DpkgState {
 }
 
 /// 软件源中的一个候选版本。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RepoPackage {
     pub metadata: PackageMetadata,
     pub download_size: u64,
     pub filename: String,
-    pub repo_base: String,
+    pub repo_base: Arc<str>,
     pub sha256: String,
+}
+
+impl Default for RepoPackage {
+    fn default() -> Self {
+        Self {
+            metadata: PackageMetadata::default(),
+            download_size: 0,
+            filename: String::new(),
+            repo_base: Arc::from(""),
+            sha256: String::new(),
+        }
+    }
 }
 
 impl RepoPackage {
@@ -142,7 +155,7 @@ impl RepoPackage {
             metadata: PackageMetadata::from_stanza(stanza),
             download_size: stanza.get_first_line("Size").parse().unwrap_or(0),
             filename: stanza.get_first_line("Filename"),
-            repo_base: String::new(),
+            repo_base: Arc::from(""),
             sha256: stanza.get_first_line("SHA256"),
         }
     }
@@ -254,7 +267,7 @@ mod tests {
     fn builds_download_url() {
         let package = RepoPackage {
             filename: "pool/main/h/hello/hello_1.0_amd64.deb".to_string(),
-            repo_base: "https://example.com/ubuntu/".to_string(),
+            repo_base: Arc::from("https://example.com/ubuntu/"),
             ..Default::default()
         };
         assert_eq!(

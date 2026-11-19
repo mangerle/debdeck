@@ -55,6 +55,19 @@ impl RepositoryData {
     pub fn latest(&self, pkg: &str) -> Option<&RepoPackage> {
         self.versions(pkg).first()
     }
+
+    /// 合并另一份局部索引扫描结果，保持版本降序与（版本, 架构）去重不变量。
+    pub fn merge(&mut self, other: Self) {
+        for (name, versions) in other.packages {
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.packages.entry(name) {
+                slot.insert(versions);
+            } else {
+                for package in versions {
+                    self.record(package);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
