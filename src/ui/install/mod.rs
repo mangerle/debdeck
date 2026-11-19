@@ -13,7 +13,6 @@
 
 mod actions;
 mod content;
-pub(crate) mod password_input;
 mod progress;
 mod result;
 

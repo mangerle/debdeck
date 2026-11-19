@@ -8,19 +8,79 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::app::{DebDeckApp, Operation};
+use crate::runtime::AuthPrompt;
+use crate::ui::password_input::PasswordInputState;
 use crate::util::format_bytes;
 
 use super::{actions, body, overlay, title};
 
 /// 绘制操作框。
-pub(crate) fn show(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
+pub(crate) fn show(
+    operation: &Operation,
+    password_input: &Entity<PasswordInputState>,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
     let dismissible = operation.result.is_some();
     let card = match &operation.result {
-        None => running(operation, cx),
+        None => match operation.auth_prompt.as_ref() {
+            Some(prompt) => auth_prompt(operation, prompt, password_input, cx),
+            None => running(operation, cx),
+        },
         Some(Ok(message)) => success(operation, message, cx),
         Some(Err(error)) => failure(operation, error, cx),
     };
     overlay(card, dismissible, cx)
+}
+
+/// 需要管理员认证：在弹窗内部直接提供密码输入框与错误反馈。
+fn auth_prompt(
+    operation: &Operation,
+    prompt: &AuthPrompt,
+    password_input: &Entity<PasswordInputState>,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
+    let danger = cx.theme().danger;
+    let muted = cx.theme().muted_foreground;
+    let message = if prompt.message.trim().is_empty() {
+        "执行该操作需要管理员权限，请输入密码以继续。".to_string()
+    } else {
+        prompt.message.clone()
+    };
+    let prompt_label = if prompt.prompt.trim().is_empty() {
+        "密码：".to_string()
+    } else {
+        prompt.prompt.clone()
+    };
+
+    let cancel = Button::new("cancel-operation-auth")
+        .label("取消")
+        .ghost()
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.dialogs.request_cancel();
+            cx.notify();
+        }));
+    let submit = Button::new("submit-operation-auth")
+        .label("授权并继续")
+        .primary()
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.submit_operation_password(cx);
+        }));
+
+    v_flex()
+        .gap(px(10.0))
+        .child(title(operation.title.clone()))
+        .child(div().w_full().min_w(px(0.0)).child(body(message)))
+        .children(prompt.error.as_ref().map(|error| {
+            div()
+                .text_xs()
+                .text_color(danger)
+                .whitespace_normal()
+                .child(error.clone())
+        }))
+        .child(div().text_xs().text_color(muted).child(prompt_label))
+        .child(password_input.clone())
+        .child(actions().child(cancel).child(submit))
+        .into_any_element()
 }
 
 /// 运行中：转圈 + 阶段文字 + 进度条（有总量时）。

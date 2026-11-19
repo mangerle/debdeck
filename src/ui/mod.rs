@@ -14,6 +14,7 @@ pub mod icons;
 pub mod install;
 pub mod modals;
 pub mod notices;
+pub mod password_input;
 pub mod status_bar;
 pub mod theme;
 pub mod toolbar;

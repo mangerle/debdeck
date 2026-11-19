@@ -25,7 +25,9 @@ pub(crate) fn show(
     let element = match modal {
         ModalState::Confirm(confirm) => confirm::show(&app.paths, confirm, cx),
         ModalState::Download(dialog) => download::show(&app.catalog, dialog, cx),
-        ModalState::Operation(operation) => operation::show(operation, cx),
+        ModalState::Operation(operation) => {
+            operation::show(operation, &app.operation_password_input, cx)
+        }
         ModalState::SelfUpdate => self_update::show(&app.self_update, cx),
         ModalState::Message { title, message } => message::show(title, message, cx),
     };
