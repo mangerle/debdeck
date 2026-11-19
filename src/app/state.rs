@@ -155,6 +155,13 @@ pub(crate) enum Confirm {
         pkg: String,
         name: String,
     },
+    UpgradeAll {
+        count: usize,
+    },
+    UpgradePackage {
+        pkg: String,
+        name: String,
+    },
 }
 
 /// 在线下载对话框。
@@ -277,6 +284,15 @@ pub(crate) enum Action {
     Copy(String),
     /// 重新读取软件源与已安装数据。
     Refresh,
+    /// 同步 APT 软件源索引（`apt-get update`）。
+    AptUpdate,
+    /// 升级全部可升级软件包（`apt-get upgrade`）。
+    UpgradeAll,
+    /// 升级单个已安装软件包（`apt-get install --only-upgrade`）。
+    UpgradePackage {
+        pkg: String,
+        name: String,
+    },
 }
 
 /// 刷新是否可用。

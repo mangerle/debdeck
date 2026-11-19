@@ -10,7 +10,7 @@
 use gpui_kit::Context;
 
 use crate::app::state::DebDeckApp;
-use crate::runtime::BackendEvent;
+use crate::runtime::{BackendEvent, RefreshScope};
 
 impl DebDeckApp {
     pub(crate) fn poll_events(&mut self, cx: &mut Context<Self>) {
@@ -48,7 +48,7 @@ impl DebDeckApp {
             }
             BackendEvent::OperationFinished {
                 id,
-                refresh_installed,
+                refresh,
                 result,
             } => {
                 if let Err(error) = result.as_ref() {
@@ -57,12 +57,20 @@ impl DebDeckApp {
                 let matched = self.dialogs.record_operation_result(id, result);
                 // 只有仍然显示着的那个操作才驱动刷新；后台被替换掉的任务结果
                 // 只记日志，不打断当前模态。
-                if matched && refresh_installed {
-                    self.request_installed_refresh();
-                }
-                // 操作期间积压的外部变更，现在补上。
-                if matched && self.dialogs.take_pending_refresh() {
-                    self.request_installed_refresh();
+                if matched {
+                    match refresh {
+                        RefreshScope::None => {}
+                        RefreshScope::Installed => self.request_installed_refresh(),
+                        RefreshScope::All => {
+                            self.catalog.set_repository_loading(true);
+                            self.tasks.refresh_repository();
+                            self.request_installed_refresh();
+                        }
+                    }
+                    // 操作期间积压的外部变更，现在补上。
+                    if self.dialogs.take_pending_refresh() {
+                        self.request_installed_refresh();
+                    }
                 }
             }
             event @ (BackendEvent::SelfUpdateChecked(_)

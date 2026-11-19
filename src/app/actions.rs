@@ -110,6 +110,19 @@ impl DebDeckApp {
             ),
             Action::Download { pkg, name } => self.open_download_dialog(pkg, name),
             Action::Refresh => self.refresh_all(),
+            Action::AptUpdate => self.start_apt_update(),
+            Action::UpgradeAll => {
+                let count = self.catalog.counts().upgradable;
+                if count == 0 {
+                    self.set_toast("当前没有可更新的应用", cx);
+                } else {
+                    self.dialogs.modal = Some(ModalState::Confirm(Confirm::UpgradeAll { count }));
+                }
+            }
+            Action::UpgradePackage { pkg, name } => {
+                self.dialogs.modal =
+                    Some(ModalState::Confirm(Confirm::UpgradePackage { pkg, name }));
+            }
         }
         cx.notify();
     }
@@ -197,6 +210,41 @@ impl DebDeckApp {
             .begin_operation(Operation::new(id, title, "正在请求管理员授权…"));
     }
 
+    pub(crate) fn start_apt_update(&mut self) {
+        let Ok(id) = self.submit_or_alert("无法同步软件源", self.tasks.apt_update()) else {
+            return;
+        };
+        self.dialogs.begin_operation(Operation::new(
+            id,
+            "同步软件源",
+            "正在请求管理员授权并同步软件源索引…",
+        ));
+    }
+
+    pub(crate) fn start_upgrade_all(&mut self) {
+        let Ok(id) = self.submit_or_alert("无法执行系统更新", self.tasks.upgrade_all())
+        else {
+            return;
+        };
+        self.dialogs.begin_operation(Operation::new(
+            id,
+            "全部更新",
+            "正在请求管理员授权并更新软件包…",
+        ));
+    }
+
+    pub(crate) fn start_upgrade_package(&mut self, pkg: String, name: &str) {
+        let Ok(id) = self.submit_or_alert("无法更新应用", self.tasks.upgrade_package(pkg))
+        else {
+            return;
+        };
+        self.dialogs.begin_operation(Operation::new(
+            id,
+            format!("更新 {name}"),
+            "正在请求管理员授权并更新应用…",
+        ));
+    }
+
     pub(crate) fn start_build(&mut self, pkg: &str, name: &str) {
         let Some(package) = self.catalog.installed_package(pkg).cloned() else {
             self.dialogs
@@ -263,6 +311,8 @@ impl DebDeckApp {
             Confirm::Uninstall { pkg, name } => self.start_uninstall(pkg, &name),
             Confirm::Hold { pkg, name, hold } => self.start_hold(pkg, &name, hold),
             Confirm::Build { pkg, name } => self.start_build(&pkg, &name),
+            Confirm::UpgradeAll { .. } => self.start_upgrade_all(),
+            Confirm::UpgradePackage { pkg, name } => self.start_upgrade_package(pkg, &name),
         }
     }
 
