@@ -12,6 +12,7 @@
 //! 避免阶段切换时窗口跳动，见 [`crate::app::InstallApp::fit_window`]。
 
 mod actions;
+mod auth;
 mod content;
 mod progress;
 mod result;
