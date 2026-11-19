@@ -263,7 +263,7 @@ enum IconState {
     Ready(Option<Arc<RenderImage>>),
 }
 
-/// 有界图标缓存：图标名 → 加载状态；不存在的图标也会缓存为 `Ready(None)`，避免重复磁盘查找。
+/// 有界 LRU 图标缓存：图标名 → 加载状态；不存在的图标也会缓存为 `Ready(None)`，避免重复磁盘查找。
 #[derive(Default)]
 pub(crate) struct IconCache {
     entries: HashMap<String, IconState>,
@@ -283,9 +283,13 @@ impl IconCache {
         }
     }
 
-    /// 若缓存尚未记录该图标，则标记为加载中并向后台提交解码任务。
+    /// 若缓存尚未记录该图标，则标记为加载中并向后台提交解码任务；已命中时刷新 LRU 顺序。
     pub(crate) fn request_if_needed(&mut self, name: &str, tasks: &TaskManager, max_size: u32) {
-        if name.is_empty() || self.entries.contains_key(name) {
+        if name.is_empty() {
+            return;
+        }
+        if self.entries.contains_key(name) {
+            self.touch(name);
             return;
         }
         if tasks.load_icon(name.to_string(), max_size) {
@@ -301,16 +305,29 @@ impl IconCache {
     fn insert_entry(&mut self, name: String, state: IconState) {
         if let Some(existing) = self.entries.get_mut(&name) {
             *existing = state;
+            self.touch(&name);
             return;
         }
-        while self.entries.len() >= MAX_ICON_CACHE_ENTRIES {
+        self.evict_if_full(MAX_ICON_CACHE_ENTRIES);
+        self.order.push_back(name.clone());
+        self.entries.insert(name, state);
+    }
+
+    fn touch(&mut self, name: &str) {
+        if let Some(pos) = self.order.iter().position(|item| item == name)
+            && let Some(key) = self.order.remove(pos)
+        {
+            self.order.push_back(key);
+        }
+    }
+
+    fn evict_if_full(&mut self, capacity: usize) {
+        while self.entries.len() >= capacity {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
             self.entries.remove(&oldest);
         }
-        self.order.push_back(name.clone());
-        self.entries.insert(name, state);
     }
 }
 
@@ -392,4 +409,24 @@ pub(crate) struct DebDeckApp {
     pub(crate) update_confirm_task: Option<Task<()>>,
     /// 搜索输入防抖任务；新输入覆盖时自动取消旧定时器。
     pub(crate) search_debounce_task: Option<Task<()>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icon_cache_evicts_least_recently_used() {
+        let mut cache = IconCache::new();
+        cache.insert_loaded("a".to_string(), None);
+        cache.insert_loaded("b".to_string(), None);
+        cache.insert_loaded("c".to_string(), None);
+        // 访问 a，使其成为最近使用；此时最久未使用的是 b。
+        cache.touch("a");
+        cache.evict_if_full(3);
+
+        assert!(cache.entries.contains_key("a"));
+        assert!(!cache.entries.contains_key("b"));
+        assert!(cache.entries.contains_key("c"));
+    }
 }
