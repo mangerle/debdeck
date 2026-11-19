@@ -12,6 +12,5 @@ pub mod icon;
 pub mod launch;
 pub mod menu;
 
-pub use entry::parse_desktop_file;
 pub use icon::load_icon_bgra;
 pub use launch::launch_desktop;

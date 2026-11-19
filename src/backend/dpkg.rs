@@ -7,6 +7,7 @@
 //! 这里一次性把每包的原始段落缓存进 [`InstalledPackage::control`]，让离线重打包
 //! 不必再全量重读 `status`。
 
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
@@ -14,55 +15,120 @@ use std::time::SystemTime;
 
 use crate::backend::{BackendError, Result};
 
-use crate::deb822::{Stanza, for_each_stanza, parse_stanzas};
+use crate::deb822::{Stanza, for_each_filtered_stanza, for_each_stanza};
 use crate::model::{DesktopEntry, DpkgState, InstalledData, InstalledPackage, PackageMetadata};
 
-use super::desktop::parse_desktop_file;
+use super::desktop::entry::parse_desktop_file_with_cache;
 use super::fs_layout::FsLayout;
 
 /// 每处理这么多个包上报一次进度，避免事件风暴又让首屏等待有反馈。
 const PROGRESS_EVERY: usize = 200;
+
+/// 读取 `dpkg/status` 时实际消费的字段白名单；其余大字段（如 `Conffiles`）流式跳过。
+const STATUS_FIELDS: &[&str] = &[
+    "Package",
+    "Status",
+    "Version",
+    "Architecture",
+    "Description",
+    "Maintainer",
+    "Homepage",
+    "Pre-Depends",
+    "Depends",
+    "Installed-Size",
+];
 
 /// 加载全部已安装软件包。
 ///
 /// 只有 `Status` 为 `installed` 的包会进入结果；`config-files`、`unpacked` 等
 /// 中间状态不算已安装，因为它们没有完整的文件清单。
 pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Result<InstalledData> {
-    let content = fs::read_to_string(&layout.dpkg_status).map_err(|source| {
+    let file = File::open(&layout.dpkg_status).map_err(|source| {
         BackendError::io("读取 dpkg 状态库", layout.dpkg_status.display(), source)
     })?;
-
-    let stanzas = parse_stanzas(&content);
     let info_dir = layout.dpkg_info_dir.canonicalize().ok();
+    let list_files = scan_list_file_names(info_dir.as_deref());
+    let mut try_exec_cache: HashMap<String, bool> = HashMap::with_capacity(128);
     let mut data = InstalledData::default();
+    let mut scanned = 0usize;
 
-    for (index, stanza) in stanzas.iter().enumerate() {
-        if index > 0 && index % PROGRESS_EVERY == 0 {
-            progress(&format!("正在读取已安装应用…已扫描 {index} 个"));
+    for_each_filtered_stanza(BufReader::new(file), STATUS_FIELDS, |stanza| {
+        scanned += 1;
+        if scanned.is_multiple_of(PROGRESS_EVERY) {
+            progress(&format!("正在读取已安装应用…已扫描 {scanned} 个"));
         }
-        let metadata = PackageMetadata::from_stanza(stanza);
+        let metadata = PackageMetadata::from_stanza(&stanza);
         let dpkg = DpkgState::parse(stanza.get("Status").unwrap_or_default());
         if metadata.name.is_empty() || !dpkg.is_installed() {
-            continue;
+            return;
         }
         let name = metadata.name.clone();
-        let list_path = locate_info_file_in(info_dir.as_deref(), &name, &metadata.arch, "list");
+        let list_path = locate_list_file(info_dir.as_deref(), &list_files, &name, &metadata.arch);
         let updated = list_path
             .as_deref()
             .and_then(|path| fs::metadata(path).ok())
             .and_then(|meta| meta.modified().ok());
         let desktop = list_path
             .as_deref()
-            .and_then(|path| find_desktop_entry_from_list(&name, path));
+            .and_then(|path| find_desktop_entry_from_list(&name, path, &mut try_exec_cache));
         data.record(InstalledPackage {
             metadata,
             dpkg,
             desktop,
             updated,
         });
-    }
+    })
+    .map_err(|source| BackendError::io("解析 dpkg 状态库", layout.dpkg_status.display(), source))?;
 
     Ok(data)
+}
+
+/// 预扫描 `dpkg/info` 目录中的所有 `.list` 文件名，避免逐包执行 `canonicalize` + `is_file`。
+fn scan_list_file_names(info_dir: Option<&Path>) -> HashSet<String> {
+    let Some(dir) = info_dir else {
+        return HashSet::new();
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return HashSet::new();
+    };
+    let mut names = HashSet::with_capacity(2048);
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str()
+            && name.ends_with(".list")
+        {
+            names.insert(name.to_string());
+        }
+    }
+    names
+}
+
+fn locate_list_file(
+    base: Option<&Path>,
+    list_files: &HashSet<String>,
+    pkg_name: &str,
+    arch: &str,
+) -> Option<PathBuf> {
+    let base = base?;
+    if !safe_info_component(pkg_name) || (!arch.is_empty() && !safe_info_component(arch)) {
+        return None;
+    }
+    let plain_name = format!("{pkg_name}.list");
+    if list_files.contains(&plain_name)
+        && let Some(plain) = checked_info_file(base, &plain_name)
+        && plain.is_file()
+    {
+        return Some(plain);
+    }
+    if !arch.is_empty() {
+        let qualified_name = format!("{pkg_name}:{arch}.list");
+        if list_files.contains(&qualified_name)
+            && let Some(qualified) = checked_info_file(base, &qualified_name)
+            && qualified.is_file()
+        {
+            return Some(qualified);
+        }
+    }
+    None
 }
 
 /// `info` 目录里某个后缀的文件，优先不限定架构的名字。
@@ -179,7 +245,11 @@ pub fn load_package_control(
 }
 
 /// 从 `<包>.list` 流式扫描 `.desktop` 路径并挑选桌面入口，避免把整份文件清单读入内存。
-fn find_desktop_entry_from_list(pkg_name: &str, list_path: &Path) -> Option<DesktopEntry> {
+fn find_desktop_entry_from_list(
+    pkg_name: &str,
+    list_path: &Path,
+    try_exec_cache: &mut HashMap<String, bool>,
+) -> Option<DesktopEntry> {
     let file = File::open(list_path).ok()?;
     let mut reader = BufReader::new(file);
     let mut line = String::new();
@@ -200,7 +270,7 @@ fn find_desktop_entry_from_list(pkg_name: &str, list_path: &Path) -> Option<Desk
     }
     candidates.sort();
     candidates.iter().find_map(|path| {
-        let mut entry = parse_desktop_file(Path::new(path))?;
+        let mut entry = parse_desktop_file_with_cache(Path::new(path), Some(try_exec_cache))?;
         entry.menu_state = crate::backend::desktop::menu::menu_state(&entry.path);
         Some(entry)
     })

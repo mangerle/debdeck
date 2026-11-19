@@ -4,20 +4,37 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::model::{DesktopEntry, MenuEntryState};
 use crate::util::command_exists;
 
 /// 读取并解析一个桌面条目文件；不合法或不应显示时返回 `None`。
 pub fn parse_desktop_file(path: &Path) -> Option<DesktopEntry> {
+    parse_desktop_file_with_cache(path, None)
+}
+
+/// 带 `TryExec` 结果缓存的桌面条目解析，供批量扫描时复用 `PATH` 探测结果。
+pub(crate) fn parse_desktop_file_with_cache(
+    path: &Path,
+    mut try_exec_cache: Option<&mut HashMap<String, bool>>,
+) -> Option<DesktopEntry> {
     let content = fs::read_to_string(path).ok()?;
-    let mut entry = parse_desktop_str(&content, path)?;
+    let mut entry = parse_desktop_str_impl(&content, path, try_exec_cache.as_deref_mut())?;
     entry.path = path.to_path_buf();
     Some(entry)
 }
 
 /// 从文本解析桌面条目。`path` 仅用于在缺少 `Name` 时回落到文件名。
 pub fn parse_desktop_str(content: &str, path: &Path) -> Option<DesktopEntry> {
+    parse_desktop_str_impl(content, path, None)
+}
+
+fn parse_desktop_str_impl(
+    content: &str,
+    path: &Path,
+    mut try_exec_cache: Option<&mut HashMap<String, bool>>,
+) -> Option<DesktopEntry> {
     let values = parse_kv(content);
     if values.is_empty() {
         return None;
@@ -36,11 +53,11 @@ pub fn parse_desktop_str(content: &str, path: &Path) -> Option<DesktopEntry> {
         return None;
     }
     // TryExec 指向的程序不存在时，条目虽然合法也启动不了，直接不展示。
-    if let Some(try_exec) = values.get("TryExec")
-        && !try_exec.trim().is_empty()
-        && !command_exists(try_exec.trim())
-    {
-        return None;
+    if let Some(try_exec) = values.get("TryExec") {
+        let trimmed = try_exec.trim();
+        if !trimmed.is_empty() && !check_try_exec(trimmed, try_exec_cache.as_deref_mut()) {
+            return None;
+        }
     }
     if !show_in_allowed(&values) {
         return None;
@@ -87,26 +104,42 @@ fn parse_kv(content: &str) -> HashMap<String, String> {
     values
 }
 
-/// 当前会话的桌面环境标识，用于 `OnlyShowIn`/`NotShowIn` 匹配。
-fn current_desktops() -> Vec<String> {
-    let mut desktops = Vec::with_capacity(6);
-    for key in [
-        "XDG_CURRENT_DESKTOP",
-        "XDG_SESSION_DESKTOP",
-        "DESKTOP_SESSION",
-    ] {
-        if let Ok(value) = env::var(key) {
-            for part in value.split([':', ';']) {
-                let part = part.trim().to_lowercase();
-                if !part.is_empty() {
-                    desktops.push(part);
+fn check_try_exec(program: &str, cache: Option<&mut HashMap<String, bool>>) -> bool {
+    if let Some(cache) = cache {
+        if let Some(&exists) = cache.get(program) {
+            return exists;
+        }
+        let exists = command_exists(program);
+        cache.insert(program.to_string(), exists);
+        exists
+    } else {
+        command_exists(program)
+    }
+}
+
+/// 当前会话的桌面环境标识，用于 `OnlyShowIn`/`NotShowIn` 匹配（进程生命周期内缓存一次）。
+fn current_desktops() -> &'static [String] {
+    static DESKTOPS: OnceLock<Vec<String>> = OnceLock::new();
+    DESKTOPS.get_or_init(|| {
+        let mut desktops = Vec::with_capacity(6);
+        for key in [
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "DESKTOP_SESSION",
+        ] {
+            if let Ok(value) = env::var(key) {
+                for part in value.split([':', ';']) {
+                    let part = part.trim().to_lowercase();
+                    if !part.is_empty() {
+                        desktops.push(part);
+                    }
                 }
             }
         }
-    }
-    desktops.sort();
-    desktops.dedup();
-    desktops
+        desktops.sort();
+        desktops.dedup();
+        desktops
+    })
 }
 
 /// 按规范匹配 `OnlyShowIn`/`NotShowIn`；拿不到会话信息时一律放行，
