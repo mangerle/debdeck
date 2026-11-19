@@ -360,10 +360,16 @@ impl DebDeckApp {
         }
     }
 
-    /// 异步清空并聚焦操作弹窗密码输入框。
-    pub(crate) fn reset_and_focus_operation_password(&mut self, cx: &mut Context<Self>) {
-        self.operation_password_input
-            .update(cx, PasswordInputState::clear);
+    /// 异步清空并聚焦操作弹窗密码输入框；`echo` 为真时按明文提示关闭掩码。
+    pub(crate) fn reset_and_focus_operation_password(
+        &mut self,
+        echo: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.operation_password_input.update(cx, |input, cx| {
+            input.clear(cx);
+            input.set_masked(!echo, cx);
+        });
         let window_handle = self.window_handle;
         let input = self.operation_password_input.clone();
         cx.spawn(async move |_, cx| {

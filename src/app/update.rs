@@ -52,11 +52,12 @@ impl DebDeckApp {
                 prompt,
                 responder,
             } => {
+                let echo = prompt.echo;
                 if self
                     .dialogs
                     .record_operation_auth_prompt(id, prompt, responder)
                 {
-                    self.reset_and_focus_operation_password(cx);
+                    self.reset_and_focus_operation_password(echo, cx);
                 }
             }
             BackendEvent::OperationAuthorized { id } => {

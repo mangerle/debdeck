@@ -70,6 +70,14 @@ impl PasswordInputState {
         cx.notify();
     }
 
+    /// 按 PAM 提示类型设置掩码：明文提示（如确认用户名）关闭掩码，密码提示开启。
+    pub(crate) fn set_masked(&mut self, masked: bool, cx: &mut Context<Self>) {
+        if self.masked != masked {
+            self.masked = masked;
+            cx.notify();
+        }
+    }
+
     fn toggle_masked(&mut self, cx: &mut Context<Self>) {
         self.masked = !self.masked;
         cx.notify();
