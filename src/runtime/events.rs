@@ -19,6 +19,7 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender, TrySendError};
 
 use crate::model::{InstalledData, RepositoryData};
+use crate::update::{DownloadedUpdate, UpdateInfo};
 
 /// 请求标识，用于把进度与结果路由回当前那个操作对话框。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -88,6 +89,19 @@ pub enum BackendEvent {
         /// 成功时是给用户的说明文本，失败时是错误详情。
         result: Result<String, String>,
     },
+    /// 自更新清单检查完成。
+    SelfUpdateChecked(Result<Option<UpdateInfo>, String>),
+    /// 自更新下载进度或阶段变化。
+    SelfUpdateDownloadProgress {
+        /// 完成百分比；总量未知时为空。
+        percent: Option<f32>,
+        /// 可直接展示的中文状态。
+        message: String,
+    },
+    /// 自更新包已下载并验签，或下载失败。
+    SelfUpdateDownloaded(Result<DownloadedUpdate, String>),
+    /// 自更新安装完成或失败。
+    SelfUpdateInstalled(Result<(), String>),
 }
 
 /// 把实现标准错误特型的强类型错误链转成展示文本。

@@ -8,8 +8,9 @@
 //! | scan | 解析 `/var/lib/apt/lists` | 解压数百 MB 索引，不该挡住已安装列表的刷新 |
 //! | system | pkexec 卸载/保持版本、离线重打包 | 提权操作必须串行，避免两个 apt 事务互相抢锁 |
 //! | net | 下载安装包 | 长耗时网络操作，不该拖住本地打包 |
+//! | update | 检查、下载与安装 DebDeck 自身版本 | 自更新链路与普通包下载隔离，避免覆盖运行中的二进制时抢同一 worker |
 //!
-//! 每条队列一个专属的任务类型（`CatalogJob`/`ScanJob`/`SystemJob`/`NetJob`），
+//! 每条队列一个专属的任务类型（`CatalogJob`/`ScanJob`/`SystemJob`/`NetJob`/`UpdateJob`），
 //! 而不是一个大而全的 `Command`：这样「把下载任务投递给打包线程」在编译期就不可
 //! 表示，worker 也不需要为不可能到达的分支写兜底。
 //!
@@ -30,6 +31,7 @@ use crate::backend::fs_layout::FsLayout;
 use crate::model::InstalledPackage;
 use crate::runtime::events::{EVENT_QUEUE_CAPACITY, EventReceiver, EventSink, OperationId, Waker};
 use crate::runtime::watcher::Watcher;
+use crate::update::{DownloadedUpdate, UpdateInfo};
 
 mod worker;
 
@@ -44,6 +46,9 @@ const SCAN_QUEUE_CAPACITY: usize = 2;
 const SYSTEM_QUEUE_CAPACITY: usize = 8;
 /// 并行下载任务上限。界面同一时间只展示一个操作，但保留少量排队余量。
 const NET_QUEUE_CAPACITY: usize = 4;
+/// 自更新必须在同一时刻只有一个任务在途；额外槽位只承接检查、下载、安装的
+/// 短时排队，界面状态机会阻止重复点击，容量仍然有界。
+const UPDATE_QUEUE_CAPACITY: usize = 4;
 
 /// 任务提交失败。有界队列满时快速失败，由界面明确提示而不是静默丢任务。
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +105,18 @@ struct NetJob {
     cancel: CancelToken,
 }
 
+/// DebDeck 自身版本更新任务。
+enum UpdateJob {
+    /// 检查远端清单并验签。
+    Check,
+    /// 下载并验签更新包。
+    Download(UpdateInfo),
+    /// 安装已下载的更新包。
+    Install(DownloadedUpdate),
+    /// 主窗口稳定运行后确认更新成功，清理崩溃观察期状态。
+    ConfirmSuccess,
+}
+
 /// worker 线程共享的执行环境。
 #[derive(Clone)]
 struct Worker {
@@ -115,6 +132,7 @@ pub struct TaskManager {
     scan_tx: Sender<ScanJob>,
     system_tx: Sender<SystemJob>,
     net_tx: Sender<NetJob>,
+    update_tx: Sender<UpdateJob>,
     /// 排队去重标记，与对应队列一起交给 worker。
     pending_installed: Arc<AtomicBool>,
     pending_repository: Arc<AtomicBool>,
@@ -141,11 +159,12 @@ impl TaskManager {
         let (scan_tx, scan_rx) = async_channel::bounded(SCAN_QUEUE_CAPACITY);
         let (system_tx, system_rx) = async_channel::bounded(SYSTEM_QUEUE_CAPACITY);
         let (net_tx, net_rx) = async_channel::bounded(NET_QUEUE_CAPACITY);
+        let (update_tx, update_rx) = async_channel::bounded(UPDATE_QUEUE_CAPACITY);
 
         let pending_installed = Arc::new(AtomicBool::new(false));
         let pending_repository = Arc::new(AtomicBool::new(false));
 
-        let mut workers = Vec::with_capacity(5);
+        let mut workers = Vec::with_capacity(6);
         workers.push(worker::spawn_catalog(
             catalog_rx,
             worker.clone(),
@@ -158,6 +177,7 @@ impl TaskManager {
         ));
         workers.push(worker::spawn_system(system_rx, worker.clone()));
         workers.push(worker::spawn_download(net_rx, worker.clone()));
+        workers.push(worker::spawn_update(update_rx, worker.clone()));
         let watcher = Watcher::start(worker.layout.clone(), worker.sink.clone());
 
         let manager = Self {
@@ -166,6 +186,7 @@ impl TaskManager {
             scan_tx,
             system_tx,
             net_tx,
+            update_tx,
             pending_installed,
             pending_repository,
             workers,
@@ -279,6 +300,26 @@ impl TaskManager {
         )?;
         Ok((id, cancel))
     }
+
+    /// 检查 DebDeck 自身更新。
+    pub fn check_self_update(&self) -> Result<(), TaskSubmitError> {
+        Self::submit(&self.update_tx, "自更新", UpdateJob::Check)
+    }
+
+    /// 下载并验签已确认可用的新版本。
+    pub fn download_self_update(&self, update: UpdateInfo) -> Result<(), TaskSubmitError> {
+        Self::submit(&self.update_tx, "自更新", UpdateJob::Download(update))
+    }
+
+    /// 安装已下载并验签的更新包。
+    pub fn install_self_update(&self, downloaded: DownloadedUpdate) -> Result<(), TaskSubmitError> {
+        Self::submit(&self.update_tx, "自更新", UpdateJob::Install(downloaded))
+    }
+
+    /// 确认新版本已稳定启动，关闭崩溃观察期。
+    pub fn confirm_self_update(&self) -> Result<(), TaskSubmitError> {
+        Self::submit(&self.update_tx, "自更新", UpdateJob::ConfirmSuccess)
+    }
 }
 
 impl Drop for TaskManager {
@@ -290,6 +331,7 @@ impl Drop for TaskManager {
         self.scan_tx.close();
         self.system_tx.close();
         self.net_tx.close();
+        self.update_tx.close();
 
         for handle in self.workers.drain(..) {
             if handle.join().is_err() {

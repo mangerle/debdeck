@@ -12,11 +12,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use async_channel::Receiver;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::select::{SearchableVec, SelectState};
-use gpui_kit::{Entity, RenderImage, SharedString};
+use gpui_kit::{Entity, RenderImage, SharedString, Task};
 
 use crate::model::{AppEntry, DesktopEntry, RepoPackage};
 use crate::runtime::{BackendEvent, CancelToken, OperationId, TaskManager};
@@ -133,6 +134,7 @@ pub(crate) enum ModalState {
     Confirm(Confirm),
     Download(DownloadDialog),
     Operation(Operation),
+    SelfUpdate,
     Message { title: String, message: String },
 }
 
@@ -319,4 +321,10 @@ pub(crate) struct DebDeckApp {
     pub(crate) files_total: usize,
     /// Toast 代次：替换旧提示后，旧的定时任务据此放弃清理。
     pub(crate) toast_generation: u64,
+    /// DebDeck 自身版本更新状态。
+    pub(crate) self_update: super::self_update::SelfUpdate,
+    /// 更新安装后用户请求重启；应用循环退出后由入口拉起新进程。
+    pub(crate) restart_requested: Arc<AtomicBool>,
+    /// 首帧稳定后确认升级成功的延时任务；必须由应用持有，避免脱缰。
+    pub(crate) update_confirm_task: Option<Task<()>>,
 }

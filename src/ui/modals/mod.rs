@@ -8,6 +8,7 @@ pub mod confirm;
 pub mod download;
 pub mod message;
 pub mod operation;
+pub mod self_update;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::h_flex;
@@ -26,6 +27,7 @@ pub(crate) fn show(
         ModalState::Confirm(confirm) => confirm::show(app, confirm, cx),
         ModalState::Download(dialog) => download::show(app, dialog, cx),
         ModalState::Operation(operation) => operation::show(app, operation, cx),
+        ModalState::SelfUpdate => self_update::show(app, cx),
         ModalState::Message { title, message } => message::show(app, title, message, cx),
     };
     // 放回：模态在回调执行前必须仍然存在，否则后台进度事件会找不到它。

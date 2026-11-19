@@ -61,6 +61,12 @@ impl DebDeckApp {
                     self.request_installed_refresh();
                 }
             }
+            event @ (BackendEvent::SelfUpdateChecked(_)
+            | BackendEvent::SelfUpdateDownloadProgress { .. }
+            | BackendEvent::SelfUpdateDownloaded(_)
+            | BackendEvent::SelfUpdateInstalled(_)) => {
+                self.apply_self_update_event(event);
+            }
         }
     }
 

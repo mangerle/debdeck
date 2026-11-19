@@ -68,8 +68,8 @@ jobs:
 
       - name: Verify minimum supported Rust version
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          cargo +1.95.0 check --locked --all-targets
+          rustup toolchain install 1.96.0 --profile minimal
+          cargo +1.96.0 check --locked --all-targets
 
   package:
     name: Build and validate Debian package

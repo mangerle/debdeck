@@ -13,4 +13,4 @@ pub(crate) use events::{
     BackendEvent, CatalogUpdate, OperationId, UpgradableReport, Waker, report_error,
 };
 pub use instance::InstanceLock;
-pub(crate) use tasks::{CancelToken, DownloadRequest, TaskManager};
+pub(crate) use tasks::{CancelToken, DownloadRequest, TaskManager, TaskSubmitError};

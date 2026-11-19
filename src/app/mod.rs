@@ -17,6 +17,7 @@ mod catalog;
 mod dialogs;
 mod install;
 mod list;
+mod self_update;
 mod state;
 mod update;
 
@@ -24,6 +25,7 @@ pub(crate) use catalog::Catalog;
 pub(crate) use dialogs::Dialogs;
 pub(crate) use install::{InstallApp, PasswordUi, Phase};
 pub(crate) use list::ListView;
+pub(crate) use self_update::{SelfUpdatePrimaryAction, SelfUpdateSnapshot};
 // UI 层需要的状态类型集中再导出：`state` 本身保持私有，避免绘制代码绕过
 // `app` 的门面去抓内部模块。
 pub(crate) use state::{
@@ -33,9 +35,11 @@ pub(crate) use state::{
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::component::IndexPath;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::select::{SearchableVec, SelectState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, h_flex, v_flex};
@@ -45,6 +49,7 @@ use crate::backend::FsLayout;
 use crate::backend::shell;
 use crate::runtime::{BackendEvent, InstanceLock, TaskManager, Waker};
 use crate::ui::{APP_ICON_SIZE, window_icon};
+use crate::update::{RecoveryStatus, check_and_recover_on_startup, restart_current_process};
 use crate::util::{APP_ID, APP_NAME, AppPaths};
 
 mod refresh_action {
@@ -73,7 +78,7 @@ pub fn run() {
         return;
     }
 
-    let _instance = match InstanceLock::acquire() {
+    let instance = match InstanceLock::acquire() {
         Ok(instance) => instance,
         Err(message) => {
             tracing::error!("{message}");
@@ -82,9 +87,32 @@ pub fn run() {
         }
     };
 
+    match check_and_recover_on_startup() {
+        Ok(RecoveryStatus::Normal) => {
+            tracing::debug!("自更新启动自检通过，没有待确认的升级");
+        }
+        Ok(RecoveryStatus::PendingConfirmation { attempts }) => {
+            tracing::info!("新版本处于健康观察期，当前为第 {attempts} 次启动尝试");
+        }
+        Ok(RecoveryStatus::RolledBack { from_version }) => {
+            tracing::warn!("新版本 {from_version} 连续启动失败，已自动回滚到上一稳定版本");
+        }
+        Err(error) => tracing::warn!("自更新启动自检失败，继续以当前版本启动：{error}"),
+    }
+
+    let restart_requested = Arc::new(AtomicBool::new(false));
+    let restart_flag = Arc::clone(&restart_requested);
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
-        .run(run_main_window);
+        .run(move |cx| run_main_window(cx, restart_flag));
+
+    // 自更新重启前必须释放单实例锁，否则新进程会被旧实例误判为重复启动。
+    drop(instance);
+    if restart_requested.load(Ordering::Relaxed)
+        && let Err(error) = restart_current_process()
+    {
+        tracing::error!("更新已安装，但自动重启失败：{error}");
+    }
 }
 
 /// 安装模式：单窗口、单安装包。
@@ -94,17 +122,23 @@ fn run_install_window(path: PathBuf) {
         .run(move |cx| open_install_window(cx, path));
 }
 
-fn run_main_window(cx: &mut App) {
+fn run_main_window(cx: &mut App, restart_requested: Arc<AtomicBool>) {
     gpui_kit::init(cx);
-    if let Err(error) = gpui_kit::open_window(window_options(), cx, create_main_app) {
+    if let Err(error) = gpui_kit::open_window(window_options(), cx, move |window, cx| {
+        create_main_app(window, cx, restart_requested)
+    }) {
         tracing::error!("无法打开窗口：{error:#}");
         cx.quit();
     }
 }
 
-fn create_main_app(window: &mut Window, cx: &mut App) -> Entity<DebDeckApp> {
+fn create_main_app(
+    window: &mut Window,
+    cx: &mut App,
+    restart_requested: Arc<AtomicBool>,
+) -> Entity<DebDeckApp> {
     crate::ui::theme::configure(cx, Some(window));
-    cx.new(|cx| DebDeckApp::new(window, cx))
+    cx.new(|cx| DebDeckApp::new(window, cx, restart_requested))
 }
 
 fn open_install_window(cx: &mut App, path: PathBuf) {
@@ -306,7 +340,11 @@ fn bind_refresh_action(cx: &mut Context<DebDeckApp>) {
 }
 
 impl DebDeckApp {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        restart_requested: Arc<AtomicBool>,
+    ) -> Self {
         let paths = AppPaths::new();
         let (tasks, rx, wake_rx) = start_backend();
         let (search_input, files_input) = create_inputs(window, cx);
@@ -315,7 +353,7 @@ impl DebDeckApp {
         spawn_wake_loop(wake_rx, cx);
         bind_refresh_action(cx);
 
-        Self {
+        let mut app = Self {
             paths,
             tasks,
             rx,
@@ -335,7 +373,20 @@ impl DebDeckApp {
             files_key: None,
             files_total: 0,
             toast_generation: 0,
-        }
+            self_update: self_update::SelfUpdate::default(),
+            restart_requested,
+            update_confirm_task: None,
+        };
+        app.start_startup_update_check();
+        app.update_confirm_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            let _ = this.update(cx, |app, _cx| {
+                if let Err(error) = app.tasks.confirm_self_update() {
+                    tracing::warn!("无法提交自更新成功确认任务：{error}");
+                }
+            });
+        }));
+        app
     }
 
     /// 重算可见行与快照。Catalog 条目只在版本变化时复制一次；搜索/排序只
@@ -460,7 +511,9 @@ impl Render for DebDeckApp {
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(APP_NAME),
-                ),
+                )
+                .child(div().flex_grow(1.0))
+                .child(self_update_button(self, cx)),
         );
 
         div()
@@ -478,4 +531,30 @@ impl Render for DebDeckApp {
             .children(modal)
             .children(toast)
     }
+}
+
+/// 标题栏版本入口：有更新时突出显示，点击打开同一更新弹窗。
+fn self_update_button(app: &DebDeckApp, cx: &mut Context<DebDeckApp>) -> Button {
+    let has_update = app.self_update.has_update();
+    let available = app.self_update.available_version();
+    let label = if let Some(version) = available.as_ref() {
+        format!("可更新 v{version}")
+    } else if has_update {
+        "重启以完成更新".to_string()
+    } else {
+        format!("v{}", env!("CARGO_PKG_VERSION"))
+    };
+    let mut button = Button::new("self-update-entry")
+        .label(label)
+        .compact()
+        .tooltip("检查并安装 DebDeck 更新")
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.open_self_update_dialog(cx);
+        }));
+    button = if has_update {
+        button.primary()
+    } else {
+        button.ghost()
+    };
+    button
 }

@@ -24,4 +24,5 @@ pub(crate) mod deb822;
 pub(crate) mod model;
 pub(crate) mod runtime;
 pub(crate) mod ui;
+pub(crate) mod update;
 pub(crate) mod util;
