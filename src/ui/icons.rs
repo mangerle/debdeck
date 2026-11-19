@@ -1,4 +1,4 @@
-//! 图标位图：应用图标的加载缓存与窗口图标。
+//! 图标位图：应用图标的纹理包装、字母占位图与内嵌窗口图标。
 
 use std::sync::Arc;
 
@@ -6,58 +6,18 @@ use gpui_kit::component::Theme;
 use gpui_kit::{FontWeight, IntoElement, ParentElement as _, RenderImage, Styled as _, div, px};
 use smallvec::smallvec;
 
-use crate::app::IconCache;
-use crate::backend::desktop::resolve_icon_path;
-
 /// 详情页应用图标的逻辑尺寸。
 pub(crate) const DETAIL_ICON_SIZE: f32 = 44.0;
 /// 按 2x 缩放准备详情图标纹理。
-const DETAIL_ICON_TEXTURE_SIZE: u32 = 88;
+pub(crate) const DETAIL_ICON_TEXTURE_SIZE: u32 = 88;
 
-/// 取图标纹理，未命中缓存时才读盘解码并高质量预缩放。
-///
-/// 解析失败的图标名也要缓存（`None`），否则每一次重绘都会对同一个不存在的文件
-/// 重试一次 `stat` + 打开。
-pub(crate) fn load_icon_texture(
-    cache: &mut IconCache,
-    icon_name: &str,
-) -> Option<Arc<RenderImage>> {
-    if icon_name.is_empty() {
-        return None;
-    }
-    if let Some(cached) = cache.get(icon_name) {
-        return cached.clone();
-    }
-    let texture = resolve_icon_path(icon_name).and_then(|path| {
-        image::open(&path).ok().map(|image| {
-            let icon = prepare_icon_image(image.to_rgba8(), DETAIL_ICON_TEXTURE_SIZE);
-            let frame = image::Frame::new(to_bgra(icon));
-            Arc::new(RenderImage::new(smallvec![frame]))
-        })
-    });
-    cache.insert(icon_name.to_string(), texture.clone());
-    texture
+/// 将后台解码并转为 BGRA 字节序的位图包装为 GPUI 纹理。
+pub(crate) fn render_image_from_bgra(bgra: image::RgbaImage) -> Arc<RenderImage> {
+    let frame = image::Frame::new(bgra);
+    Arc::new(RenderImage::new(smallvec![frame]))
 }
 
-/// 将图标缩放到显示尺寸的 2x 纹理，同时保持原始宽高比。
-fn prepare_icon_image(image: image::RgbaImage, max_size: u32) -> image::RgbaImage {
-    let (width, height) = image.dimensions();
-    let longest = width.max(height);
-    if longest <= max_size {
-        return image;
-    }
-
-    let scaled_width =
-        (u64::from(width) * u64::from(max_size) + u64::from(longest) / 2) / u64::from(longest);
-    let scaled_height =
-        (u64::from(height) * u64::from(max_size) + u64::from(longest) / 2) / u64::from(longest);
-    let width = u32::try_from(scaled_width).unwrap_or(1).max(1);
-    let height = u32::try_from(scaled_height).unwrap_or(1).max(1);
-    image::imageops::resize(&image, width, height, image::imageops::FilterType::Lanczos3)
-}
-
-/// GPUI 的 `RenderImage` 按 BGRA 上传纹理；`image` crate 解码得到的是 RGBA。
-/// 这里只交换红、蓝通道，类型仍用 `RgbaImage` 作为字节容器。
+/// GPUI 的 `RenderImage` 按 BGRA 上传纹理；内嵌 PNG 解码得到的是 RGBA。
 fn to_bgra(mut image: image::RgbaImage) -> image::RgbaImage {
     for pixel in image.pixels_mut() {
         pixel.0.swap(0, 2);
@@ -122,27 +82,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_rgba_pixels_to_the_bgra_layout_gpui_expects() {
-        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 4]));
-        assert_eq!(to_bgra(image).get_pixel(0, 0).0, [3, 2, 1, 4]);
-    }
-
-    #[test]
     fn embedded_app_icon_decodes() {
         assert!(app_icon_texture().is_some());
-    }
-
-    #[test]
-    fn prepares_detail_icon_without_distorting_aspect_ratio() {
-        let image = image::RgbaImage::from_pixel(128, 64, image::Rgba([1, 2, 3, 4]));
-        let prepared = prepare_icon_image(image, DETAIL_ICON_TEXTURE_SIZE);
-        assert_eq!(prepared.dimensions(), (88, 44));
-    }
-
-    #[test]
-    fn leaves_small_detail_icon_at_original_size() {
-        let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([1, 2, 3, 4]));
-        let prepared = prepare_icon_image(image, DETAIL_ICON_TEXTURE_SIZE);
-        assert_eq!(prepared.dimensions(), (32, 32));
     }
 }

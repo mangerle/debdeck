@@ -67,6 +67,10 @@ impl DebDeckApp {
             | BackendEvent::SelfUpdateInstalled(_)) => {
                 self.apply_self_update_event(event);
             }
+            BackendEvent::IconLoaded { name, image } => {
+                let texture = image.map(crate::ui::render_image_from_bgra);
+                self.icons.insert_loaded(name, texture);
+            }
         }
     }
 

@@ -109,9 +109,64 @@ pub fn resolve_icon_path(icon: &str) -> Option<PathBuf> {
     None
 }
 
+/// 读取并缩放指定图标，直接输出 GPUI 所需的 BGRA 字节序位图。
+///
+/// 磁盘查找、PNG 解码与 Lanczos3 缩放全部在后台线程完成，避免阻塞 UI 渲染帧。
+pub fn load_icon_bgra(icon: &str, max_size: u32) -> Option<image::RgbaImage> {
+    let path = resolve_icon_path(icon)?;
+    let image = image::open(&path).ok()?;
+    let scaled = prepare_icon_image(image.to_rgba8(), max_size);
+    Some(to_bgra(scaled))
+}
+
+/// 将图标缩放到目标尺寸上限，同时保持原始宽高比。
+fn prepare_icon_image(image: image::RgbaImage, max_size: u32) -> image::RgbaImage {
+    let (width, height) = image.dimensions();
+    let longest = width.max(height);
+    if longest <= max_size || max_size == 0 {
+        return image;
+    }
+
+    let scaled_width =
+        (u64::from(width) * u64::from(max_size) + u64::from(longest) / 2) / u64::from(longest);
+    let scaled_height =
+        (u64::from(height) * u64::from(max_size) + u64::from(longest) / 2) / u64::from(longest);
+    let width = u32::try_from(scaled_width).unwrap_or(1).max(1);
+    let height = u32::try_from(scaled_height).unwrap_or(1).max(1);
+    image::imageops::resize(&image, width, height, image::imageops::FilterType::Lanczos3)
+}
+
+/// 将 RGBA 像素缓冲区原地转换为 GPUI 纹理所需的 BGRA 排列。
+fn to_bgra(mut image: image::RgbaImage) -> image::RgbaImage {
+    for pixel in image.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    image
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn converts_rgba_pixels_to_bgra_layout() {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 4]));
+        assert_eq!(to_bgra(image).get_pixel(0, 0).0, [3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn prepares_icon_without_distorting_aspect_ratio() {
+        let image = image::RgbaImage::from_pixel(128, 64, image::Rgba([1, 2, 3, 4]));
+        let prepared = prepare_icon_image(image, 88);
+        assert_eq!(prepared.dimensions(), (88, 44));
+    }
+
+    #[test]
+    fn leaves_small_icon_at_original_size() {
+        let image = image::RgbaImage::from_pixel(32, 32, image::Rgba([1, 2, 3, 4]));
+        let prepared = prepare_icon_image(image, 88);
+        assert_eq!(prepared.dimensions(), (32, 32));
+    }
 
     #[test]
     fn strips_icon_extensions_before_lookup() {

@@ -49,6 +49,8 @@ const NET_QUEUE_CAPACITY: usize = 4;
 /// 自更新必须在同一时刻只有一个任务在途；额外槽位只承接检查、下载、安装的
 /// 短时排队，界面状态机会阻止重复点击，容量仍然有界。
 const UPDATE_QUEUE_CAPACITY: usize = 4;
+/// 图标后台解码队列容量；快速切换选中行时只保留合理排队，超出直接丢弃旧请求。
+const ICON_QUEUE_CAPACITY: usize = 32;
 
 /// 任务提交失败。有界队列满时快速失败，由界面明确提示而不是静默丢任务。
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +119,12 @@ enum UpdateJob {
     ConfirmSuccess,
 }
 
+/// 应用图标后台解码任务。
+struct IconJob {
+    name: String,
+    max_size: u32,
+}
+
 /// worker 线程共享的执行环境。
 #[derive(Clone)]
 struct Worker {
@@ -133,6 +141,7 @@ pub struct TaskManager {
     system_tx: Sender<SystemJob>,
     net_tx: Sender<NetJob>,
     update_tx: Sender<UpdateJob>,
+    icon_tx: Sender<IconJob>,
     /// 排队去重标记，与对应队列一起交给 worker。
     pending_installed: Arc<AtomicBool>,
     pending_repository: Arc<AtomicBool>,
@@ -160,24 +169,19 @@ impl TaskManager {
         let (system_tx, system_rx) = async_channel::bounded(SYSTEM_QUEUE_CAPACITY);
         let (net_tx, net_rx) = async_channel::bounded(NET_QUEUE_CAPACITY);
         let (update_tx, update_rx) = async_channel::bounded(UPDATE_QUEUE_CAPACITY);
+        let (icon_tx, icon_rx) = async_channel::bounded(ICON_QUEUE_CAPACITY);
 
         let pending_installed = Arc::new(AtomicBool::new(false));
         let pending_repository = Arc::new(AtomicBool::new(false));
 
-        let mut workers = Vec::with_capacity(6);
-        workers.push(worker::spawn_catalog(
-            catalog_rx,
-            worker.clone(),
-            Arc::clone(&pending_installed),
-        ));
-        workers.push(worker::spawn_scan(
-            scan_rx,
-            worker.clone(),
-            Arc::clone(&pending_repository),
-        ));
-        workers.push(worker::spawn_system(system_rx, worker.clone()));
-        workers.push(worker::spawn_download(net_rx, worker.clone()));
-        workers.push(worker::spawn_update(update_rx, worker.clone()));
+        let workers = vec![
+            worker::spawn_catalog(catalog_rx, worker.clone(), Arc::clone(&pending_installed)),
+            worker::spawn_scan(scan_rx, worker.clone(), Arc::clone(&pending_repository)),
+            worker::spawn_system(system_rx, worker.clone()),
+            worker::spawn_download(net_rx, worker.clone()),
+            worker::spawn_update(update_rx, worker.clone()),
+            worker::spawn_icon(icon_rx, worker.clone()),
+        ];
         let watcher = Watcher::start(worker.layout.clone(), worker.sink.clone());
 
         let manager = Self {
@@ -187,6 +191,7 @@ impl TaskManager {
             system_tx,
             net_tx,
             update_tx,
+            icon_tx,
             pending_installed,
             pending_repository,
             workers,
@@ -320,6 +325,11 @@ impl TaskManager {
     pub fn confirm_self_update(&self) -> Result<(), TaskSubmitError> {
         Self::submit(&self.update_tx, "自更新", UpdateJob::ConfirmSuccess)
     }
+
+    /// 请求在后台线程解析并解码应用图标；队列满时静默忽略，避免阻塞主线程。
+    pub fn load_icon(&self, name: String, max_size: u32) -> bool {
+        self.icon_tx.try_send(IconJob { name, max_size }).is_ok()
+    }
 }
 
 impl Drop for TaskManager {
@@ -332,6 +342,7 @@ impl Drop for TaskManager {
         self.system_tx.close();
         self.net_tx.close();
         self.update_tx.close();
+        self.icon_tx.close();
 
         for handle in self.workers.drain(..) {
             if handle.join().is_err() {

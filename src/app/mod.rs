@@ -48,7 +48,7 @@ use gpui_kit::*;
 use crate::backend::FsLayout;
 use crate::backend::shell;
 use crate::runtime::{BackendEvent, InstanceLock, TaskManager, Waker};
-use crate::ui::{APP_ICON_SIZE, window_icon};
+use crate::ui::{APP_ICON_SIZE, DETAIL_ICON_TEXTURE_SIZE, window_icon};
 use crate::update::{RecoveryStatus, check_and_recover_on_startup, restart_current_process};
 use crate::util::{APP_ID, APP_NAME, AppPaths};
 
@@ -410,6 +410,24 @@ impl DebDeckApp {
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
         self.ensure_files();
+        self.ensure_selected_icon();
+    }
+
+    /// 为当前选中项预请求图标后台解码；渲染期只读取缓存结果。
+    pub(crate) fn ensure_selected_icon(&mut self) {
+        let Some(pkg) = self.list.selected.as_deref() else {
+            return;
+        };
+        let Some(icon_name) = self
+            .catalog
+            .installed_package(pkg)
+            .and_then(|package| package.desktop.as_ref())
+            .map(|desktop| desktop.icon.as_str())
+        else {
+            return;
+        };
+        self.icons
+            .request_if_needed(icon_name, &self.tasks, DETAIL_ICON_TEXTURE_SIZE);
     }
 
     fn ensure_files(&mut self) {
@@ -462,6 +480,7 @@ impl DebDeckApp {
         self.files_key = None;
         self.files_input
             .update(cx, |state, cx| state.set_value("", window, cx));
+        self.ensure_selected_icon();
         cx.notify();
     }
 

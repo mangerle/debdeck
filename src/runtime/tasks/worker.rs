@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use async_channel::Receiver;
 
+use crate::backend::desktop::load_icon_bgra;
 use crate::backend::fs_layout::FsLayout;
 use crate::backend::{apt, download, dpkg, privileged, repack, shell};
 use crate::runtime::events::{
@@ -19,7 +20,8 @@ use crate::update::{
 use crate::util::{Throttle, current_arch, format_bytes};
 
 use super::{
-    CancelToken, CatalogJob, InstalledPackage, NetJob, ScanJob, SystemJob, UpdateJob, Worker,
+    CancelToken, CatalogJob, IconJob, InstalledPackage, NetJob, ScanJob, SystemJob, UpdateJob,
+    Worker,
 };
 
 /// 下载进度事件的最小间隔：字节回调每 128 KiB 一次，不节流会淹掉界面。
@@ -248,6 +250,19 @@ pub(super) fn spawn_update(rx: Receiver<UpdateJob>, worker: Worker) -> JoinHandl
         let Worker { sink, .. } = worker;
         while let Ok(job) = rx.recv_blocking() {
             handle_update_job(job, &sink);
+        }
+    })
+}
+
+pub(super) fn spawn_icon(rx: Receiver<IconJob>, worker: Worker) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let Worker { sink, .. } = worker;
+        while let Ok(job) = rx.recv_blocking() {
+            let image = load_icon_bgra(&job.name, job.max_size);
+            sink.send(BackendEvent::IconLoaded {
+                name: job.name,
+                image,
+            });
         }
     })
 }

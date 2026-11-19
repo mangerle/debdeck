@@ -102,6 +102,13 @@ pub enum BackendEvent {
     SelfUpdateDownloaded(Result<DownloadedUpdate, String>),
     /// 自更新安装完成或失败。
     SelfUpdateInstalled(Result<(), String>),
+    /// 后台解码完成的应用图标（`None` 表示不存在或解码失败）。
+    IconLoaded {
+        /// 图标名或路径键。
+        name: String,
+        /// 已缩放并转为 BGRA 字节序的位图。
+        image: Option<image::RgbaImage>,
+    },
 }
 
 /// 把实现标准错误特型的强类型错误链转成展示文本。

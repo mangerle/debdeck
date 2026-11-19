@@ -254,8 +254,46 @@ pub(crate) fn refresh_allowed(catalog: &Catalog, dialogs: &Dialogs) -> bool {
     !dialogs.is_operation_running() && !catalog.repository_loading()
 }
 
-/// 图标缓存：图标名 → 解析结果（`None` 表示「确认没有图标」，避免每帧重试磁盘）。
-pub(crate) type IconCache = HashMap<String, Option<Arc<RenderImage>>>;
+/// 图标缓存条目：区分「后台解码中」与「已得到结果（含缺失）」。
+enum IconState {
+    Pending,
+    Ready(Option<Arc<RenderImage>>),
+}
+
+/// 图标缓存：图标名 → 加载状态；不存在的图标也会缓存为 `Ready(None)`，避免重复磁盘查找。
+#[derive(Default)]
+pub(crate) struct IconCache {
+    entries: HashMap<String, IconState>,
+}
+
+impl IconCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// 读取已就绪的图标纹理；尚在后台解码或不存在时返回 `None`。
+    pub(crate) fn get_ready(&self, name: &str) -> Option<Arc<RenderImage>> {
+        match self.entries.get(name) {
+            Some(IconState::Ready(Some(image))) => Some(Arc::clone(image)),
+            _ => None,
+        }
+    }
+
+    /// 若缓存尚未记录该图标，则标记为加载中并向后台提交解码任务。
+    pub(crate) fn request_if_needed(&mut self, name: &str, tasks: &TaskManager, max_size: u32) {
+        if name.is_empty() || self.entries.contains_key(name) {
+            return;
+        }
+        if tasks.load_icon(name.to_string(), max_size) {
+            self.entries.insert(name.to_string(), IconState::Pending);
+        }
+    }
+
+    /// 写入后台返回的解码结果。
+    pub(crate) fn insert_loaded(&mut self, name: String, image: Option<Arc<RenderImage>>) {
+        self.entries.insert(name, IconState::Ready(image));
+    }
+}
 
 /// 排序下拉的状态。
 pub(crate) type SortSelect = Entity<SelectState<SearchableVec<&'static str>>>;

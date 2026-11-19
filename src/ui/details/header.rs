@@ -10,13 +10,13 @@ use gpui_kit::{
 use crate::app::{DebDeckApp, IconCache};
 use crate::model::AppEntry;
 use crate::ui::entry_status;
-use crate::ui::icons::{DETAIL_ICON_SIZE, draw_letter_icon, load_icon_texture};
+use crate::ui::icons::{DETAIL_ICON_SIZE, draw_letter_icon};
 
 use super::DetailContext;
 
 /// 图标 + 名称 + 状态徽标。头部与下面的操作区之间用一条细线分开。
 pub(super) fn show_header(
-    icons: &mut IconCache,
+    icons: &IconCache,
     context: &DetailContext,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
@@ -37,14 +37,10 @@ pub(super) fn show_header(
         .into_any_element()
 }
 
-fn detail_icon(
-    icons: &mut IconCache,
-    context: &DetailContext,
-    cx: &Context<DebDeckApp>,
-) -> AnyElement {
+fn detail_icon(icons: &IconCache, context: &DetailContext, cx: &Context<DebDeckApp>) -> AnyElement {
     match context
         .desktop
-        .and_then(|desktop| load_icon_texture(icons, &desktop.icon))
+        .and_then(|desktop| icons.get_ready(&desktop.icon))
     {
         Some(texture) => img(texture)
             .w(px(DETAIL_ICON_SIZE))

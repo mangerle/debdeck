@@ -22,7 +22,9 @@ use gpui_kit::component::{h_resizable, resizable_panel, v_flex};
 use gpui_kit::{Context, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
 
 pub use icons::window_icon;
-pub(crate) use icons::{APP_ICON_SIZE, app_icon_texture};
+pub(crate) use icons::{
+    APP_ICON_SIZE, DETAIL_ICON_TEXTURE_SIZE, app_icon_texture, render_image_from_bgra,
+};
 pub(crate) use notices::{show_loading, show_toast};
 
 use crate::app::{DebDeckApp, RowStatus};

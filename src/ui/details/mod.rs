@@ -50,7 +50,7 @@ pub(crate) fn show(
         desktop,
     };
 
-    let header = show_header(&mut app.icons, &context, cx);
+    let header = show_header(&app.icons, &context, cx);
     let actions = show_actions(&app.catalog, &app.paths, &context, cx);
     let tabs = show_tabs(&app.list, &context, cx);
     let body = match app.list.detail_tab {
