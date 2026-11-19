@@ -1,15 +1,18 @@
-//! 安装认证会话的状态机。
+//! 安装认证会话的事件驱动状态机。
 //!
 //! 控制器只做三件事：把 D-Bus 授权请求接到 helper、把 helper/PAM 事件转给 UI、
-//! 把 UI 密码回执写回 helper。所有等待都有轮询边界；窗口关闭或总超时会先给
-//! 挂起的 D-Bus 调用一个明确结果，再终止并回收子进程。
+//! 把 UI 密码回执写回 helper。所有外部事件源（D-Bus、helper、UI 回执、pkexec
+//! 进程退出、总超时）全部汇聚到单一有界通道，阻塞等待事件唤醒，不使用定时轮询；
+//! 窗口关闭或总超时会先给挂起的 D-Bus 调用明确结果，再终止并回收子进程。
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
+use crate::backend::Result as BackendResult;
 use nix::unistd::Uid;
 use zbus::OwnedVariant;
 
@@ -20,10 +23,18 @@ use super::helper::{HelperEvent, HelperSession};
 use super::process::{PkexecProcess, ProcessExit, process_start_time};
 use super::{AuthPrompt, AuthResponse, INSTALL_TIMEOUT, InstallEvent};
 
-/// 主循环轮询间隔：既要及时响应 PAM 提示，又不能空转烧 CPU。
-const POLL_INTERVAL: Duration = Duration::from_millis(40);
-/// D-Bus 认证请求队列容量。正常同一时刻只有一个授权请求。
-const AUTH_REQUEST_CAPACITY: usize = 8;
+/// 控制器统一事件总线容量：涵盖 D-Bus 授权、PAM 提示、UI 回执与进程退出。
+const CONTROLLER_EVENT_CAPACITY: usize = 64;
+
+/// 汇聚到控制器的所有异步事件源。
+pub(super) enum ControllerEvent {
+    Auth(AuthRequest),
+    Helper(HelperEvent),
+    Response(AuthResponse),
+    ProcessExited(BackendResult<ProcessExit>),
+    Timeout,
+    Stop,
+}
 
 /// 认证代理的回调请求。
 pub(super) enum AuthRequest {
@@ -87,7 +98,7 @@ pub(super) fn run_from_path(session: PathSession<'_>) {
     });
 }
 
-/// 后台控制器入口：准备认证代理与 pkexec，然后交给状态机运行。
+/// 后台控制器入口：准备认证代理、pkexec 与事件汇聚总线，然后进入纯事件驱动循环。
 pub(super) fn run_controller(input: ControllerInput<'_>) {
     let ControllerInput {
         args,
@@ -99,8 +110,8 @@ pub(super) fn run_controller(input: ControllerInput<'_>) {
     let Some((pid, start_time, uid)) = current_subject(&events) else {
         return;
     };
-    let (auth_tx, auth_rx) = async_channel::bounded::<AuthRequest>(AUTH_REQUEST_CAPACITY);
-    let _registration = match register_agent(pid, start_time, uid, auth_tx) {
+    let (ctrl_tx, ctrl_rx) = async_channel::bounded::<ControllerEvent>(CONTROLLER_EVENT_CAPACITY);
+    let _registration = match register_agent(pid, start_time, uid, ctrl_tx.clone()) {
         Ok(registration) => registration,
         Err(error) => {
             tracing::warn!("内嵌认证不可用，回退系统认证窗口：{error}");
@@ -108,17 +119,20 @@ pub(super) fn run_controller(input: ControllerInput<'_>) {
             return;
         }
     };
-    let mut process = match PkexecProcess::start(&args) {
+    let mut process = match PkexecProcess::start(&args, ctrl_tx.clone()) {
         Ok(process) => process,
         Err(error) => {
             send_finished(&events, Err(error.to_string()));
             return;
         }
     };
+    let _response_forwarder = ResponseForwarder::start(responses, ctrl_tx.clone());
+    let _timeout_guard = TimeoutGuard::start(INSTALL_TIMEOUT, ctrl_tx.clone());
+
     let mut controller = Controller {
         pkg,
         events,
-        responses,
+        ctrl_tx,
         stop,
         helper: None,
         pending_auth: None,
@@ -126,7 +140,7 @@ pub(super) fn run_controller(input: ControllerInput<'_>) {
         pending_error: None,
         authorized: false,
     };
-    controller.run(&mut process, &auth_rx);
+    controller.run(&mut process, &ctrl_rx);
 }
 
 fn current_subject(events: &async_channel::Sender<InstallEvent>) -> Option<(u32, u64, i32)> {
@@ -166,7 +180,7 @@ struct AuthBegin {
 struct Controller<'a> {
     pkg: String,
     events: async_channel::Sender<InstallEvent>,
-    responses: async_channel::Receiver<AuthResponse>,
+    ctrl_tx: async_channel::Sender<ControllerEvent>,
     stop: &'a AtomicBool,
     helper: Option<HelperSession>,
     pending_auth: Option<async_channel::Sender<AuthOutcome>>,
@@ -176,34 +190,47 @@ struct Controller<'a> {
 }
 
 impl Controller<'_> {
-    fn run(&mut self, process: &mut PkexecProcess, auth_rx: &async_channel::Receiver<AuthRequest>) {
-        let started = Instant::now();
-        loop {
+    fn run(
+        &mut self,
+        process: &mut PkexecProcess,
+        ctrl_rx: &async_channel::Receiver<ControllerEvent>,
+    ) {
+        while let Ok(event) = ctrl_rx.recv_blocking() {
             if self.stop.load(Ordering::Relaxed) {
                 self.abort(process, "已取消安装。");
                 return;
             }
-            if started.elapsed() >= INSTALL_TIMEOUT {
+            if !self.dispatch_event(process, event) {
+                return;
+            }
+        }
+    }
+
+    fn dispatch_event(&mut self, process: &mut PkexecProcess, event: ControllerEvent) -> bool {
+        match event {
+            ControllerEvent::Auth(request) => self.handle_auth_request(process, request),
+            ControllerEvent::Helper(helper_event) => {
+                self.handle_helper_event(helper_event);
+                true
+            }
+            ControllerEvent::Response(response) => self.handle_response(process, response),
+            ControllerEvent::ProcessExited(exit) => {
+                process.mark_finished();
+                match exit {
+                    Ok(exit) => self.finish(process, &exit),
+                    Err(error) => {
+                        self.abort(process, &format!("无法等待 pkexec：{error:#}"));
+                    }
+                }
+                false
+            }
+            ControllerEvent::Timeout => {
                 self.abort(process, "安装超时，已终止管理员操作。");
-                return;
+                false
             }
-            if !self.handle_auth_requests(process, auth_rx) {
-                return;
-            }
-            self.handle_helper_events();
-            if !self.handle_responses(process) {
-                return;
-            }
-            match process.poll() {
-                Ok(Some(exit)) => {
-                    self.finish(process, &exit);
-                    return;
-                }
-                Ok(None) => thread::sleep(POLL_INTERVAL),
-                Err(error) => {
-                    self.abort(process, &format!("无法等待 pkexec：{error:#}"));
-                    return;
-                }
+            ControllerEvent::Stop => {
+                self.abort(process, "已取消安装。");
+                false
             }
         }
     }
@@ -212,19 +239,6 @@ impl Controller<'_> {
         resolve_auth(&mut self.pending_auth, AuthOutcome::Cancelled);
         process.terminate();
         send_finished(&self.events, Err(message.to_string()));
-    }
-
-    fn handle_auth_requests(
-        &mut self,
-        process: &mut PkexecProcess,
-        auth_rx: &async_channel::Receiver<AuthRequest>,
-    ) -> bool {
-        while let Ok(request) = auth_rx.try_recv() {
-            if !self.handle_auth_request(process, request) {
-                return false;
-            }
-        }
-        true
     }
 
     fn handle_auth_request(&mut self, process: &mut PkexecProcess, request: AuthRequest) -> bool {
@@ -273,7 +287,7 @@ impl Controller<'_> {
         } else {
             message
         };
-        match HelperSession::start(&cookie, &identities) {
+        match HelperSession::start(&cookie, &identities, self.ctrl_tx.clone()) {
             Ok(session) => {
                 self.helper = Some(session);
                 self.pending_auth = Some(done);
@@ -287,16 +301,6 @@ impl Controller<'_> {
                 false
             }
         }
-    }
-
-    fn handle_helper_events(&mut self) {
-        let Some(session) = self.helper.take() else {
-            return;
-        };
-        while let Ok(event) = session.events.try_recv() {
-            self.handle_helper_event(event);
-        }
-        self.helper = Some(session);
     }
 
     fn handle_helper_event(&mut self, event: HelperEvent) {
@@ -344,26 +348,24 @@ impl Controller<'_> {
         }
     }
 
-    fn handle_responses(&mut self, process: &mut PkexecProcess) -> bool {
-        while let Ok(response) = self.responses.try_recv() {
-            match response {
-                AuthResponse::Input(password) => {
-                    if let Some(session) = &self.helper {
-                        session.reply(password);
-                    }
+    fn handle_response(&mut self, process: &mut PkexecProcess, response: AuthResponse) -> bool {
+        match response {
+            AuthResponse::Input(password) => {
+                if let Some(session) = &self.helper {
+                    session.reply(password);
                 }
-                AuthResponse::Cancel => {
-                    if let Some(session) = &self.helper {
-                        session.cancel();
-                    }
-                    resolve_auth(&mut self.pending_auth, AuthOutcome::Cancelled);
-                    process.terminate();
-                    send_finished(&self.events, Err("已取消安装。".to_string()));
-                    return false;
+                true
+            }
+            AuthResponse::Cancel => {
+                if let Some(session) = &self.helper {
+                    session.cancel();
                 }
+                resolve_auth(&mut self.pending_auth, AuthOutcome::Cancelled);
+                process.terminate();
+                send_finished(&self.events, Err("已取消安装。".to_string()));
+                false
             }
         }
-        true
     }
 
     fn finish(&mut self, process: &mut PkexecProcess, exit: &ProcessExit) {
@@ -407,5 +409,88 @@ fn send_finished(events: &async_channel::Sender<InstallEvent>, result: Result<St
 fn send_install_event(events: &async_channel::Sender<InstallEvent>, event: InstallEvent) {
     if events.send_blocking(event).is_err() {
         tracing::debug!("安装窗口已关闭，停止发送安装事件");
+    }
+}
+
+/// 将 UI 密码回执通道转发到控制器事件总线；通道关闭时发送 `Stop` 立即唤醒控制器。
+struct ResponseForwarder {
+    responses: async_channel::Receiver<AuthResponse>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ResponseForwarder {
+    fn start(
+        responses: async_channel::Receiver<AuthResponse>,
+        ctrl_tx: async_channel::Sender<ControllerEvent>,
+    ) -> Self {
+        let rx = responses.clone();
+        let handle = thread::spawn(move || {
+            while let Ok(response) = rx.recv_blocking() {
+                if ctrl_tx
+                    .send_blocking(ControllerEvent::Response(response))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = ctrl_tx.send_blocking(ControllerEvent::Stop);
+        });
+        Self {
+            responses,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for ResponseForwarder {
+    fn drop(&mut self) {
+        self.responses.close();
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            tracing::warn!("安装回执转发线程发生 panic，已隔离");
+        }
+    }
+}
+
+/// 安装总超时守卫：基于 `Condvar` 阻塞等待，退出时瞬间唤醒回收。
+struct TimeoutGuard {
+    state: Arc<(Mutex<bool>, Condvar)>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl TimeoutGuard {
+    fn start(timeout: Duration, ctrl_tx: async_channel::Sender<ControllerEvent>) -> Self {
+        let state = Arc::new((Mutex::new(false), Condvar::new()));
+        let thread_state = Arc::clone(&state);
+        let handle = thread::spawn(move || {
+            let (lock, condvar) = &*thread_state;
+            let Ok(guard) = lock.lock() else { return };
+            let result = condvar.wait_timeout_while(guard, timeout, |cancelled| !*cancelled);
+            if let Ok((cancelled, _)) = result
+                && !*cancelled
+            {
+                let _ = ctrl_tx.send_blocking(ControllerEvent::Timeout);
+            }
+        });
+        Self {
+            state,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for TimeoutGuard {
+    fn drop(&mut self) {
+        let (lock, condvar) = &*self.state;
+        if let Ok(mut cancelled) = lock.lock() {
+            *cancelled = true;
+            condvar.notify_all();
+        }
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            tracing::warn!("安装超时守卫线程发生 panic，已隔离");
+        }
     }
 }

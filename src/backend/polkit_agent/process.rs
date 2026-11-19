@@ -5,20 +5,28 @@
 
 use std::fs;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::backend::{BackendError, Result};
-use std::os::unix::process::CommandExt;
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::Pid;
 
-use crate::util::{CommandError, terminate_child};
+use crate::util::CommandError;
+
+use super::controller::ControllerEvent;
 
 /// 单个输出管道保留的最大字节数。
 const OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 /// 单次读取块大小。
 const READ_CHUNK: usize = 4096;
+/// `SIGTERM` 后等待 `pkexec` 进程组自然退出的宽限时间，超时后改用 `SIGKILL`。
+const TERM_GRACE: Duration = Duration::from_millis(200);
 
 /// 已结束的 `pkexec` 进程。
 pub(super) struct ProcessExit {
@@ -28,19 +36,24 @@ pub(super) struct ProcessExit {
     pub output: String,
 }
 
-/// 运行中的 `pkexec` 及其输出读取线程。
+/// 运行中的 `pkexec` 及其阻塞等待线程。
+///
+/// 由专用等待线程阻塞在 `Child::wait` 上，退出瞬间通过事件总线唤醒控制器，
+/// 彻底消除定时轮询与僵尸进程残留风险。
 pub(super) struct PkexecProcess {
-    child: Child,
-    stdout: Arc<Mutex<Vec<u8>>>,
-    stderr: Arc<Mutex<Vec<u8>>>,
-    stdout_thread: Option<JoinHandle<()>>,
-    stderr_thread: Option<JoinHandle<()>>,
+    pid: u32,
+    reaped: Arc<AtomicBool>,
+    done: Arc<(Mutex<bool>, Condvar)>,
+    wait_thread: Option<JoinHandle<()>>,
     finished: bool,
 }
 
 impl PkexecProcess {
-    /// 启动 pkexec。父进程是本安装进程，正好与注册代理时的 subject 对应。
-    pub(super) fn start(args: &[String]) -> Result<Self> {
+    /// 启动 pkexec 并派生阻塞等待线程。父进程是本安装进程，正好与注册代理时的 subject 对应。
+    pub(super) fn start(
+        args: &[String],
+        events: async_channel::Sender<ControllerEvent>,
+    ) -> Result<Self> {
         let pkexec = "/usr/bin/pkexec";
         if !Path::new(pkexec).is_file() {
             return Err(BackendError::missing_program("启动管理员认证", "pkexec"));
@@ -62,23 +75,90 @@ impl PkexecProcess {
                 },
             )
         })?;
+        let pid = child.id();
         let stdout = Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
         let stderr = Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
         let stdout_thread = spawn_output_reader(child.stdout.take(), Arc::clone(&stdout));
         let stderr_thread = spawn_output_reader(child.stderr.take(), Arc::clone(&stderr));
-        Ok(Self {
+
+        let reaped = Arc::new(AtomicBool::new(false));
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let wait_thread = spawn_waiter(WaitContext {
             child,
             stdout,
             stderr,
             stdout_thread,
             stderr_thread,
+            reaped: Arc::clone(&reaped),
+            done: Arc::clone(&done),
+            events,
+        });
+
+        Ok(Self {
+            pid,
+            reaped,
+            done,
+            wait_thread: Some(wait_thread),
             finished: false,
         })
     }
 
-    /// 查询子进程是否退出；退出时等待输出线程并返回完整结果。
-    pub(super) fn poll(&mut self) -> Result<Option<ProcessExit>> {
-        match self.child.try_wait().map_err(|source| {
+    /// 收到退出事件后调用：标记已结束并等待回收线程收尾。
+    pub(super) fn mark_finished(&mut self) {
+        self.finished = true;
+        Self::join_thread(&mut self.wait_thread, "pkexec 等待");
+    }
+
+    /// 终止进程组并等待阻塞回收线程与输出线程全部结束。
+    pub(super) fn terminate(&mut self) {
+        if !self.finished {
+            if !self.reaped.load(Ordering::Acquire) {
+                send_group_signal(self.pid, Signal::SIGTERM);
+                if !self.wait_done(TERM_GRACE) && !self.reaped.load(Ordering::Acquire) {
+                    send_group_signal(self.pid, Signal::SIGKILL);
+                }
+            }
+            self.finished = true;
+        }
+        Self::join_thread(&mut self.wait_thread, "pkexec 等待");
+    }
+
+    fn wait_done(&self, timeout: Duration) -> bool {
+        let (lock, condvar) = &*self.done;
+        let Ok(guard) = lock.lock() else {
+            return true;
+        };
+        if *guard {
+            return true;
+        }
+        condvar
+            .wait_timeout_while(guard, timeout, |finished| !*finished)
+            .map_or(true, |(guard, _)| *guard)
+    }
+
+    fn join_thread(handle: &mut Option<JoinHandle<()>>, name: &str) {
+        if let Some(handle) = handle.take()
+            && handle.join().is_err()
+        {
+            tracing::warn!("{name}线程发生 panic，已隔离");
+        }
+    }
+}
+
+struct WaitContext {
+    child: Child,
+    stdout: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+    stdout_thread: Option<JoinHandle<()>>,
+    stderr_thread: Option<JoinHandle<()>>,
+    reaped: Arc<AtomicBool>,
+    done: Arc<(Mutex<bool>, Condvar)>,
+    events: async_channel::Sender<ControllerEvent>,
+}
+
+fn spawn_waiter(mut ctx: WaitContext) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let wait_result = ctx.child.wait().map_err(|source| {
             BackendError::command(
                 "等待 pkexec",
                 CommandError::Wait {
@@ -86,38 +166,34 @@ impl PkexecProcess {
                     source,
                 },
             )
-        })? {
-            Some(status) => {
-                self.finished = true;
-                let output = self.finish_output();
-                Ok(Some(ProcessExit { status, output }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// 终止进程组并等待所有输出线程结束。
-    pub(super) fn terminate(&mut self) {
-        if !self.finished {
-            terminate_child(&mut self.child);
-            self.finished = true;
-        }
-        Self::join_reader(&mut self.stdout_thread);
-        Self::join_reader(&mut self.stderr_thread);
-    }
-
-    fn finish_output(&mut self) -> String {
-        Self::join_reader(&mut self.stdout_thread);
-        Self::join_reader(&mut self.stderr_thread);
-        collect_output(&self.stdout, &self.stderr)
-    }
-
-    fn join_reader(handle: &mut Option<JoinHandle<()>>) {
-        if let Some(handle) = handle.take()
-            && handle.join().is_err()
+        });
+        ctx.reaped.store(true, Ordering::Release);
         {
-            tracing::warn!("pkexec 输出读取线程发生 panic，已隔离");
+            let (lock, condvar) = &*ctx.done;
+            if let Ok(mut guard) = lock.lock() {
+                *guard = true;
+                condvar.notify_all();
+            }
         }
+        PkexecProcess::join_thread(&mut ctx.stdout_thread, "pkexec 输出读取");
+        PkexecProcess::join_thread(&mut ctx.stderr_thread, "pkexec 错误输出读取");
+
+        let event = match wait_result {
+            Ok(status) => {
+                let output = collect_output(&ctx.stdout, &ctx.stderr);
+                ControllerEvent::ProcessExited(Ok(ProcessExit { status, output }))
+            }
+            Err(error) => ControllerEvent::ProcessExited(Err(error)),
+        };
+        let _ = ctx.events.send_blocking(event);
+    })
+}
+
+fn send_group_signal(pid: u32, signal: Signal) {
+    if let Ok(raw_pid) = i32::try_from(pid)
+        && let Err(error) = killpg(Pid::from_raw(raw_pid), signal)
+    {
+        tracing::debug!("向 pkexec 进程组 {raw_pid} 发送信号 {signal} 失败：{error}");
     }
 }
 

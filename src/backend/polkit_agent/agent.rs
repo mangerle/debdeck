@@ -9,7 +9,7 @@ use zbus::connection::Builder;
 use zbus::{Connection, OwnedVariant, Proxy, Variant, block_on};
 
 use super::AGENT_PATH;
-use super::controller::{AuthOutcome, AuthRequest};
+use super::controller::{AuthOutcome, AuthRequest, ControllerEvent};
 
 const AUTHORITY_SERVICE: &str = "org.freedesktop.PolicyKit1";
 const AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
@@ -35,12 +35,12 @@ impl Drop for AgentRegistration {
     }
 }
 
-/// 注册代理，把 polkitd 的回调转发到安装控制线程。
+/// 注册代理，把 polkitd 的回调直接转发到安装控制器的事件总线。
 pub(super) fn register_agent(
     pid: u32,
     start_time: u64,
     uid: i32,
-    tx: async_channel::Sender<AuthRequest>,
+    tx: async_channel::Sender<ControllerEvent>,
 ) -> BackendResult<AgentRegistration> {
     let connection = create_agent_connection(AgentIface { tx })?;
     let proxy = create_authority_proxy(connection)?;
@@ -119,7 +119,7 @@ enum PolicyKitError {
 }
 
 struct AgentIface {
-    tx: async_channel::Sender<AuthRequest>,
+    tx: async_channel::Sender<ControllerEvent>,
 }
 
 #[zbus::interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
@@ -144,12 +144,12 @@ impl AgentIface {
         let (done, done_rx) = async_channel::bounded(1);
         if self
             .tx
-            .send(AuthRequest::Begin {
+            .send(ControllerEvent::Auth(AuthRequest::Begin {
                 cookie,
                 message,
                 identities,
                 done,
-            })
+            }))
             .await
             .is_err()
         {
@@ -170,7 +170,11 @@ impl AgentIface {
     )]
     fn cancel_authentication(&self, cookie: String) {
         let _ = cookie;
-        if self.tx.try_send(AuthRequest::Cancel).is_err() {
+        if self
+            .tx
+            .try_send(ControllerEvent::Auth(AuthRequest::Cancel))
+            .is_err()
+        {
             tracing::warn!("polkit 取消请求未能送入安装控制线程");
         }
     }

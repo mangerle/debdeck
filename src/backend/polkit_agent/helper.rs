@@ -6,6 +6,8 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -15,10 +17,9 @@ use zbus::OwnedVariant;
 
 use crate::util::{CommandError, wait_child};
 
+use super::controller::ControllerEvent;
 use super::{HELPER_SOCKET, SETUID_HELPER};
 
-/// helper 输出事件容量。PAM 提示数量有限，保留足够余量避免阻塞 helper。
-const HELPER_EVENT_CAPACITY: usize = 32;
 /// helper 输入队列容量。同一提示只允许一个密码回执在途。
 const HELPER_INPUT_CAPACITY: usize = 4;
 /// helper 认证结束后等待子进程退出的时限。
@@ -48,33 +49,36 @@ enum HelperInput {
 
 /// 与一次 PAM 认证对应的 helper 通道和后台线程。
 pub(super) struct HelperSession {
-    pub(super) events: async_channel::Receiver<HelperEvent>,
     input: async_channel::Sender<HelperInput>,
+    stopped: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl HelperSession {
-    /// 连接 helper 并启动后台协议循环。
+    /// 连接 helper 并启动后台协议循环，事件直接投递到控制器总线。
     pub(super) fn start(
         cookie: &str,
         identities: &[(String, HashMap<String, OwnedVariant>)],
+        events: async_channel::Sender<ControllerEvent>,
     ) -> Result<Self> {
         let username = identity_username(identities)?;
         let (read_end, write_end, child) = open_helper(&username, cookie)?;
-        let (event_tx, event_rx) = async_channel::bounded(HELPER_EVENT_CAPACITY);
         let (input_tx, input_rx) = async_channel::bounded(HELPER_INPUT_CAPACITY);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let thread_stopped = Arc::clone(&stopped);
         let handle = thread::spawn(move || {
             helper_loop(HelperLoop {
                 read_end,
                 write_end,
-                events: &event_tx,
+                events: &events,
                 input: &input_rx,
+                stopped: &thread_stopped,
                 child,
             });
         });
         Ok(Self {
-            events: event_rx,
             input: input_tx,
+            stopped,
             handle: Some(handle),
         })
     }
@@ -100,9 +104,8 @@ impl HelperSession {
 
 impl Drop for HelperSession {
     fn drop(&mut self) {
-        // 同时关闭输出事件与输入端：前者解除 helper 线程可能的事件背压，
-        // 后者让阻塞中的 PAM 密码读取立即返回，再等待线程与子进程收尾。
-        self.events.close();
+        // 只置停机标记并关闭输入端，让阻塞中的 PAM 密码读取立即返回，避免误关共享的控制器事件总线。
+        self.stopped.store(true, Ordering::Relaxed);
         self.input.close();
         if let Some(handle) = self.handle.take()
             && handle.join().is_err()
@@ -231,8 +234,18 @@ fn write_secret(write: &mut impl Write, cookie: &str) -> Result<()> {
     Ok(())
 }
 
-fn send_helper_event(events: &async_channel::Sender<HelperEvent>, event: HelperEvent) {
-    if events.send_blocking(event).is_err() {
+fn send_helper_event(
+    events: &async_channel::Sender<ControllerEvent>,
+    stopped: &AtomicBool,
+    event: HelperEvent,
+) {
+    if stopped.load(Ordering::Relaxed) {
+        return;
+    }
+    if events
+        .send_blocking(ControllerEvent::Helper(event))
+        .is_err()
+    {
         tracing::debug!("安装控制线程已退出，停止发送 polkit helper 事件");
     }
 }
@@ -240,8 +253,9 @@ fn send_helper_event(events: &async_channel::Sender<HelperEvent>, event: HelperE
 struct HelperLoop<'a> {
     read_end: HelperRead,
     write_end: HelperWrite,
-    events: &'a async_channel::Sender<HelperEvent>,
+    events: &'a async_channel::Sender<ControllerEvent>,
     input: &'a async_channel::Receiver<HelperInput>,
+    stopped: &'a AtomicBool,
     child: HelperChild,
 }
 
@@ -249,16 +263,25 @@ fn helper_loop(mut session: HelperLoop<'_>) {
     let mut reader = BufReader::new(session.read_end);
     let mut line = String::with_capacity(256);
     loop {
+        if session.stopped.load(Ordering::Relaxed) {
+            break;
+        }
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => {
-                send_helper_event(session.events, HelperEvent::Closed);
+                send_helper_event(session.events, session.stopped, HelperEvent::Closed);
                 break;
             }
             Ok(_) => {}
         }
         let text = c_unescape(line.trim_end_matches(['\n', '\r']));
-        if !handle_line(&text, session.events, session.input, &mut session.write_end) {
+        if !handle_line(
+            &text,
+            session.events,
+            session.stopped,
+            session.input,
+            &mut session.write_end,
+        ) {
             break;
         }
     }
@@ -272,7 +295,8 @@ fn helper_loop(mut session: HelperLoop<'_>) {
 /// 处理一行 PAM 协议文本；返回 false 表示会话应结束。
 fn handle_line(
     text: &str,
-    events: &async_channel::Sender<HelperEvent>,
+    events: &async_channel::Sender<ControllerEvent>,
+    stopped: &AtomicBool,
     input: &async_channel::Receiver<HelperInput>,
     write_end: &mut HelperWrite,
 ) -> bool {
@@ -280,6 +304,7 @@ fn handle_line(
         tracing::info!("PAM 正在请求密码输入");
         send_helper_event(
             events,
+            stopped,
             HelperEvent::Prompt {
                 prompt: prompt.to_string(),
                 echo: false,
@@ -290,6 +315,7 @@ fn handle_line(
     if let Some(prompt) = text.strip_prefix("PAM_PROMPT_ECHO_ON ") {
         send_helper_event(
             events,
+            stopped,
             HelperEvent::Prompt {
                 prompt: prompt.to_string(),
                 echo: true,
@@ -298,19 +324,19 @@ fn handle_line(
         return wait_for_password(input, write_end);
     }
     if let Some(error) = text.strip_prefix("PAM_ERROR_MSG ") {
-        send_helper_event(events, HelperEvent::Error(error.to_string()));
+        send_helper_event(events, stopped, HelperEvent::Error(error.to_string()));
     } else if let Some(info) = text.strip_prefix("PAM_TEXT_INFO ") {
-        send_helper_event(events, HelperEvent::Info(info.to_string()));
+        send_helper_event(events, stopped, HelperEvent::Info(info.to_string()));
     } else if text.starts_with("SUCCESS") {
         tracing::info!("管理员认证成功");
-        send_helper_event(events, HelperEvent::Success);
+        send_helper_event(events, stopped, HelperEvent::Success);
         return false;
     } else if text.starts_with("FAILURE") {
         tracing::warn!("管理员认证失败");
-        send_helper_event(events, HelperEvent::Failure);
+        send_helper_event(events, stopped, HelperEvent::Failure);
         return false;
     } else if !text.is_empty() {
-        send_helper_event(events, HelperEvent::Info(text.to_string()));
+        send_helper_event(events, stopped, HelperEvent::Info(text.to_string()));
     }
     true
 }
