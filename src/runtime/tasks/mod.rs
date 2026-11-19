@@ -93,6 +93,16 @@ enum SystemJob {
         pkg: String,
         hold: bool,
     },
+    AptUpdate {
+        id: OperationId,
+    },
+    UpgradeAll {
+        id: OperationId,
+    },
+    UpgradePackage {
+        id: OperationId,
+        pkg: String,
+    },
     Build {
         id: OperationId,
         package: Box<InstalledPackage>,
@@ -273,6 +283,31 @@ impl TaskManager {
             &self.system_tx,
             "系统操作",
             SystemJob::Hold { id, pkg, hold },
+        )?;
+        Ok(id)
+    }
+
+    /// 同步 APT 软件源索引（`apt-get update`）。
+    pub fn apt_update(&self) -> Result<OperationId, TaskSubmitError> {
+        let id = self.next_id();
+        Self::submit(&self.system_tx, "系统操作", SystemJob::AptUpdate { id })?;
+        Ok(id)
+    }
+
+    /// 升级全部可升级软件包（`apt-get upgrade`）。
+    pub fn upgrade_all(&self) -> Result<OperationId, TaskSubmitError> {
+        let id = self.next_id();
+        Self::submit(&self.system_tx, "系统操作", SystemJob::UpgradeAll { id })?;
+        Ok(id)
+    }
+
+    /// 升级单个已安装软件包（`apt-get install --only-upgrade`）。
+    pub fn upgrade_package(&self, pkg: String) -> Result<OperationId, TaskSubmitError> {
+        let id = self.next_id();
+        Self::submit(
+            &self.system_tx,
+            "系统操作",
+            SystemJob::UpgradePackage { id, pkg },
         )?;
         Ok(id)
     }

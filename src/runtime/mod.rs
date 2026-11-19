@@ -16,6 +16,8 @@ pub(crate) use crate::backend::self_update::{
     restart_current_process,
 };
 pub(crate) use desktop::{launch_desktop, notify, open_directory, set_menu_visibility};
-pub(crate) use events::{BackendEvent, CatalogUpdate, OperationId, UpgradableReport, Waker};
+pub(crate) use events::{
+    BackendEvent, CatalogUpdate, OperationId, RefreshScope, UpgradableReport, Waker,
+};
 pub use instance::InstanceLock;
 pub(crate) use tasks::{CancelToken, DownloadRequest, TaskManager, TaskSubmitError};

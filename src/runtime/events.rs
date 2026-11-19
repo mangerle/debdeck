@@ -70,6 +70,17 @@ impl CatalogUpdate {
     }
 }
 
+/// 操作完成后需要触发的数据刷新范围。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshScope {
+    /// 不刷新目录数据（如离线重打包、仅下载）。
+    None,
+    /// 仅刷新已安装软件包与可升级状态（如卸载、保持版本、升级包）。
+    Installed,
+    /// 同时重扫软件源索引与已安装状态（如 `apt-get update`）。
+    All,
+}
+
 #[derive(Debug)]
 pub enum BackendEvent {
     /// 加载阶段的文字提示。
@@ -84,8 +95,8 @@ pub enum BackendEvent {
     },
     OperationFinished {
         id: OperationId,
-        /// 结果影响已安装列表时（卸载、保持版本）置真，由上层安排刷新。
-        refresh_installed: bool,
+        /// 结果影响系统状态时由上层安排对应范围的刷新。
+        refresh: RefreshScope,
         /// 成功时是给用户的说明文本，失败时是错误详情。
         result: Result<String, String>,
     },

@@ -15,7 +15,8 @@ use crate::backend::self_update::{
 };
 use crate::backend::{apt, download, dpkg, privileged, repack, shell};
 use crate::runtime::events::{
-    BackendEvent, CatalogUpdate, EventSink, OperationId, UpgradableReport, report_error,
+    BackendEvent, CatalogUpdate, EventSink, OperationId, RefreshScope, UpgradableReport,
+    report_error,
 };
 use crate::util::{Throttle, current_arch, format_bytes};
 
@@ -125,6 +126,9 @@ fn handle_system_job(job: SystemJob, layout: &FsLayout, sink: &EventSink) {
     match job {
         SystemJob::Uninstall { id, pkg } => handle_uninstall(id, &pkg, sink),
         SystemJob::Hold { id, pkg, hold } => handle_hold(id, &pkg, hold, sink),
+        SystemJob::AptUpdate { id } => handle_apt_update(id, sink),
+        SystemJob::UpgradeAll { id } => handle_upgrade_all(id, sink),
+        SystemJob::UpgradePackage { id, pkg } => handle_upgrade_package(id, &pkg, sink),
         SystemJob::Build {
             id,
             package,
@@ -150,7 +154,7 @@ fn handle_uninstall(id: OperationId, pkg: &str, sink: &EventSink) {
     }
     sink.send(BackendEvent::OperationFinished {
         id,
-        refresh_installed: true,
+        refresh: RefreshScope::Installed,
         result,
     });
 }
@@ -175,7 +179,76 @@ fn handle_hold(id: OperationId, pkg: &str, hold: bool, sink: &EventSink) {
     }
     sink.send(BackendEvent::OperationFinished {
         id,
-        refresh_installed: true,
+        refresh: RefreshScope::Installed,
+        result,
+    });
+}
+
+fn handle_apt_update(id: OperationId, sink: &EventSink) {
+    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
+    let result = privileged::apt_update(&mut |line| {
+        if throttle.touch() {
+            sink.send(BackendEvent::OperationProgress {
+                id,
+                message: line.to_string(),
+                progress: None,
+            });
+        }
+    })
+    .map(|()| "软件源索引已同步。".to_string())
+    .map_err(|error| report_error(&error));
+    if result.is_ok() {
+        shell::notify("软件源已同步", "APT 软件包索引已更新。");
+    }
+    sink.send(BackendEvent::OperationFinished {
+        id,
+        refresh: RefreshScope::All,
+        result,
+    });
+}
+
+fn handle_upgrade_all(id: OperationId, sink: &EventSink) {
+    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
+    let result = privileged::upgrade_all(&mut |line| {
+        if throttle.touch() {
+            sink.send(BackendEvent::OperationProgress {
+                id,
+                message: line.to_string(),
+                progress: None,
+            });
+        }
+    })
+    .map(|()| "全部可升级应用已更新完成。".to_string())
+    .map_err(|error| report_error(&error));
+    if result.is_ok() {
+        shell::notify("系统更新完成", "所有可升级软件包已更新。");
+    }
+    sink.send(BackendEvent::OperationFinished {
+        id,
+        refresh: RefreshScope::Installed,
+        result,
+    });
+}
+
+fn handle_upgrade_package(id: OperationId, pkg: &str, sink: &EventSink) {
+    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
+    let result = privileged::upgrade_package(pkg, &mut |line| {
+        if throttle.touch() {
+            sink.send(BackendEvent::OperationProgress {
+                id,
+                message: line.to_string(),
+                progress: None,
+            });
+        }
+    })
+    .map(|()| format!("软件包 {pkg} 已更新到最新版本。"))
+    .map_err(|error| report_error(&error));
+    if result.is_ok() {
+        shell::notify("应用已更新", pkg);
+    }
+    sink.send(BackendEvent::OperationFinished {
+        id,
+        refresh: RefreshScope::Installed,
         result,
     });
 }
@@ -220,7 +293,7 @@ fn handle_build(job: &BuildJob<'_>) {
     }
     sink.send(BackendEvent::OperationFinished {
         id: *id,
-        refresh_installed: false,
+        refresh: RefreshScope::None,
         result,
     });
 }
@@ -399,7 +472,7 @@ fn handle_download(job: NetJob, sink: &EventSink) {
     }
     sink.send(BackendEvent::OperationFinished {
         id,
-        refresh_installed: false,
+        refresh: RefreshScope::None,
         result,
     });
 }
