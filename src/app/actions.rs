@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 use gpui_kit::{ClipboardItem, Context};
 
 use crate::app::self_update::SelfUpdatePrimaryAction;
+use crate::app::spawn_background;
 use crate::app::state::{Action, Confirm, DebDeckApp, DownloadDialog, ModalState, Operation};
 use crate::model::{MenuEntryState, RepoPackage};
 use crate::runtime::{
@@ -116,31 +117,21 @@ impl DebDeckApp {
     fn set_menu_visibility(change: MenuVisibilityChange, cx: &mut Context<Self>) {
         let path = change.path.clone();
         let hidden = change.hidden;
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { runtime_set_menu(&path, hidden) })
-                .await;
-            _ = this.update(cx, move |app, cx| {
-                finish_menu_visibility(app, change, result, cx);
-            });
-        })
-        .detach();
+        spawn_background(
+            cx,
+            move || runtime_set_menu(&path, hidden),
+            move |app, result, cx| finish_menu_visibility(app, change, result, cx),
+        );
     }
 
     /// 在文件管理器里异步打开目录，完成后在 UI 线程显示错误。
     pub(crate) fn open_directory(path: PathBuf, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let task_path = path.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move { open_directory(&task_path) })
-                .await;
-            _ = this.update(cx, move |app, cx| {
-                finish_open_directory(app, &path, result, cx);
-            });
-        })
-        .detach();
+        let task_path = path.clone();
+        spawn_background(
+            cx,
+            move || open_directory(&task_path),
+            move |app, result, cx| finish_open_directory(app, &path, result, cx),
+        );
     }
 
     /// 组装下载对话框：只列出真正有下载地址的版本。

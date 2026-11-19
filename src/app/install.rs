@@ -17,6 +17,7 @@ use gpui_kit::{
     Window, px, size,
 };
 
+use crate::app::{spawn_background, spawn_event_loop};
 use crate::model::DebFile;
 use crate::runtime::install::{
     AuthResponse, InstallEvent, InstallSession, inspect_deb_file, start_install_session,
@@ -95,12 +96,10 @@ impl InstallApp {
             }
         })
         .detach();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { inspect_deb_file(&deb_path) })
-                .await;
-            _ = this.update(cx, |app, cx| {
+        spawn_background(
+            cx,
+            move || inspect_deb_file(&deb_path),
+            |app, result, cx| {
                 app.file = match result {
                     Ok(deb) => InstallFile::Ready(Box::new(deb)),
                     Err(error) => InstallFile::Failed(error),
@@ -108,9 +107,8 @@ impl InstallApp {
                 // 预检结果就绪后重新测量内容边界，调整到合适窗口高度。
                 app.window_height = px(0.0);
                 cx.notify();
-            });
-        })
-        .detach();
+            },
+        );
         Self {
             file: InstallFile::Inspecting,
             phase: Phase::Confirm,
@@ -217,17 +215,9 @@ impl InstallApp {
                 let events = session.events.clone();
                 self.auth_tx = Some(session.responses.clone());
                 self.session = Some(session);
-                cx.spawn(async move |this, cx| {
-                    while let Ok(event) = events.recv().await {
-                        if this
-                            .update(cx, |app, cx| app.apply_install_event(event, cx))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                })
-                .detach();
+                spawn_event_loop(events, cx, |app, event, cx| {
+                    app.apply_install_event(event, cx);
+                });
             }
             Err(error) => {
                 self.phase = Phase::Done(Err(error));

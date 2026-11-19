@@ -51,19 +51,42 @@ use crate::util::{APP_NAME, AppPaths};
 
 use bootstrap::{bind_refresh_action, create_inputs, create_sort_select, sort_from_label};
 
-/// 后端事件循环：每次唤醒处理一批事件并请求一次重绘。
-fn spawn_wake_loop(wake_rx: async_channel::Receiver<()>, cx: &mut Context<DebDeckApp>) {
-    cx.spawn(
-        async move |this, cx| {
-            while wake_rx.recv().await.is_ok() && this.update(cx, update_after_wake).is_ok() {}
-        },
-    )
+/// 在后台执行阻塞或短时 I/O 任务，完成后回到实体主线程应用结果。
+pub(super) fn spawn_background<M, T, W, F>(cx: &mut Context<M>, work: W, apply: F)
+where
+    M: 'static,
+    T: Send + 'static,
+    W: FnOnce() -> T + Send + 'static,
+    F: FnOnce(&mut M, T, &mut Context<M>) + 'static,
+{
+    cx.spawn(async move |this, cx| {
+        let result = cx.background_executor().spawn(async move { work() }).await;
+        _ = this.update(cx, move |model, cx| apply(model, result, cx));
+    })
     .detach();
 }
 
-fn update_after_wake(app: &mut DebDeckApp, cx: &mut Context<DebDeckApp>) {
-    app.poll_events();
-    cx.notify();
+/// 持续消费异步事件通道并派发回实体主线程，直到通道关闭或实体销毁。
+pub(super) fn spawn_event_loop<M, E, F>(
+    rx: async_channel::Receiver<E>,
+    cx: &mut Context<M>,
+    mut on_event: F,
+) where
+    M: 'static,
+    E: Send + 'static,
+    F: FnMut(&mut M, E, &mut Context<M>) + 'static,
+{
+    cx.spawn(async move |this, cx| {
+        while let Ok(event) = rx.recv().await {
+            if this
+                .update(cx, |model, cx| on_event(model, event, cx))
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
+    .detach();
 }
 
 fn start_backend() -> (
@@ -123,7 +146,10 @@ impl DebDeckApp {
         let (search_input, files_input) = create_inputs(window, cx);
         let sort_select = create_sort_select(window, cx);
         observe_inputs(&search_input, &files_input, &sort_select, cx);
-        spawn_wake_loop(wake_rx, cx);
+        spawn_event_loop(wake_rx, cx, |app, (), cx| {
+            app.poll_events();
+            cx.notify();
+        });
         bind_refresh_action(cx);
 
         let mut app = Self {
