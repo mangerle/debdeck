@@ -52,14 +52,14 @@ pub(crate) fn show(
 
     let header = show_header(&app.icons, &context, cx);
     let actions = show_actions(&app.catalog, &app.paths, &context, cx);
-    let tabs = show_tabs(&app.list, &context, app.files_total, cx);
+    let tabs = show_tabs(&app.list, &context, app.files_state.total(), cx);
     let body = match app.list.detail_tab {
         DetailTab::Info => info::show(&context, cx),
         DetailTab::Files => files::show(
             &context,
             files::FileView {
-                files: &app.files,
-                total: app.files_total,
+                files: app.files_state.files(),
+                total: app.files_state.total(),
                 input: &app.files_input,
             },
             cx,

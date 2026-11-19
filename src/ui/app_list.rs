@@ -26,7 +26,7 @@ pub(crate) fn show(
     _window: &mut Window,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    if app.visible.is_empty() {
+    if app.list.visible().is_empty() {
         return empty_hint(app, cx).into_any_element();
     }
     v_flex()
@@ -37,8 +37,8 @@ pub(crate) fn show(
 
 fn app_list(app: &DebDeckApp, cx: &mut Context<DebDeckApp>) -> AnyElement {
     let state = AppListRows {
-        entries: app.entries.clone(),
-        visible: app.visible.clone(),
+        entries: app.catalog.entries_arc(),
+        visible: app.list.visible_arc(),
         selected: app.list.selected.clone(),
         entity: cx.entity(),
     };

@@ -16,6 +16,7 @@ mod actions;
 mod bootstrap;
 mod catalog;
 mod dialogs;
+mod files;
 mod install;
 mod list;
 mod self_update;
@@ -25,6 +26,7 @@ mod update;
 pub use bootstrap::run;
 pub(crate) use catalog::Catalog;
 pub(crate) use dialogs::Dialogs;
+pub(crate) use files::DetailFilesState;
 pub(crate) use install::{InstallApp, InstallFile, PasswordUi, Phase};
 pub(crate) use list::ListView;
 pub(crate) use self_update::{SelfUpdate, SelfUpdatePrimaryAction, SelfUpdateSnapshot};
@@ -39,15 +41,14 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::select::{SearchableVec, SelectState};
-use gpui_kit::component::{ActiveTheme as _, TitleBar, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
 
 use crate::runtime::{BackendEvent, TaskManager, Waker};
-use crate::ui::{APP_ICON_SIZE, DETAIL_ICON_TEXTURE_SIZE};
-use crate::util::{APP_NAME, AppPaths};
+use crate::ui::DETAIL_ICON_TEXTURE_SIZE;
+use crate::util::AppPaths;
 
 use bootstrap::{bind_refresh_action, create_inputs, create_sort_select, sort_from_label};
 
@@ -147,7 +148,7 @@ impl DebDeckApp {
         let sort_select = create_sort_select(window, cx);
         observe_inputs(&search_input, &files_input, &sort_select, cx);
         spawn_event_loop(wake_rx, cx, |app, (), cx| {
-            app.poll_events();
+            app.poll_events(cx);
             cx.notify();
         });
         bind_refresh_action(cx);
@@ -164,16 +165,8 @@ impl DebDeckApp {
             search_input,
             files_input,
             sort_select,
-            entries: Arc::from([]),
-            entries_revision: 0,
-            visible: Arc::from([]),
-            selected_pkg: None,
-            clear_files_input: false,
-            loaded_files: None,
-            requested_files_key: None,
-            files: Arc::new(Vec::new()),
-            files_key: None,
-            files_total: 0,
+            window_handle: window.window_handle(),
+            files_state: DetailFilesState::new(),
             toast_generation: 0,
             self_update: self_update::SelfUpdate::default(),
             restart_requested,
@@ -192,25 +185,14 @@ impl DebDeckApp {
         app
     }
 
-    /// 在状态变更路径重算可见行与快照，不在渲染函数里做状态突变。
-    ///
-    /// Catalog 条目与可见行下标均以 `Arc<[T]>` 共享，更新快照时仅做 O(1) 指针克隆，
-    /// 不再把 7 万条行的字符串整表深拷贝。
-    pub(crate) fn sync_catalog_view(&mut self) {
-        let recomputed = self.list.ensure_current(&self.catalog);
-        let revision = self.catalog.revision();
-        if self.entries_revision != revision {
-            self.entries = self.catalog.entries_arc();
-            self.entries_revision = revision;
-        }
-        if recomputed {
-            self.visible = self.list.visible_arc();
-        }
-
-        if self.selected_pkg != self.list.selected {
-            self.selected_pkg = self.list.selected.clone();
-            self.files_key = None;
-            self.clear_files_input = true;
+    /// 在状态变更路径重算可见行，不在渲染函数里做状态突变。
+    pub(crate) fn sync_catalog_view(&mut self, cx: &mut Context<Self>) {
+        self.list.ensure_current(&self.catalog);
+        if self
+            .files_state
+            .note_selection_if_changed(self.list.selected.as_deref())
+        {
+            self.schedule_clear_files_input(cx);
         }
         self.ensure_files();
         self.ensure_selected_icon();
@@ -226,8 +208,15 @@ impl DebDeckApp {
             return;
         }
         self.list.filter = filter;
-        self.sync_catalog_view();
-        self.flush_clear_files_input(window, cx);
+        self.list.ensure_current(&self.catalog);
+        if self
+            .files_state
+            .note_selection_if_changed(self.list.selected.as_deref())
+        {
+            self.flush_clear_files_input(window, cx);
+        }
+        self.ensure_files();
+        self.ensure_selected_icon();
         cx.notify();
     }
 
@@ -255,7 +244,7 @@ impl DebDeckApp {
             return;
         }
         self.list.search = search;
-        self.sync_catalog_view();
+        self.sync_catalog_view(cx);
         cx.notify();
     }
 
@@ -265,7 +254,7 @@ impl DebDeckApp {
         }
         self.list.sort = sort;
         self.list.ascending = ascending;
-        self.sync_catalog_view();
+        self.sync_catalog_view(cx);
         cx.notify();
     }
 
@@ -280,7 +269,7 @@ impl DebDeckApp {
 
     pub(crate) fn clear_files_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.list.files_query.clear();
-        self.clear_files_input = false;
+        self.files_state.invalidate_filter();
         self.files_input
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.ensure_files();
@@ -288,11 +277,22 @@ impl DebDeckApp {
     }
 
     fn flush_clear_files_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.clear_files_input {
-            self.clear_files_input = false;
+        if self.files_state.take_pending_input_clear() {
             self.files_input
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
+    }
+
+    fn schedule_clear_files_input(&self, cx: &mut Context<Self>) {
+        let window_handle = self.window_handle;
+        cx.spawn(async move |this, cx| {
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let _ = this.update(cx, |app, cx| {
+                    app.flush_clear_files_input(window, cx);
+                });
+            });
+        })
+        .detach();
     }
 
     /// 为当前选中项预请求图标后台解码；渲染期只读取缓存结果。
@@ -313,64 +313,12 @@ impl DebDeckApp {
     }
 
     pub(crate) fn ensure_files(&mut self) {
-        let Some(entry) = self.list.selected_entry(&self.catalog) else {
-            self.clear_files_view();
-            return;
-        };
-        let Some(package) = self.catalog.installed_package(&entry.pkg) else {
-            self.clear_files_view();
-            return;
-        };
-
-        let revision = self.catalog.revision();
-        let pkg = entry.pkg.clone();
-        let arch = package.metadata.arch.clone();
-
-        let Some((loaded_rev, loaded_pkg, loaded_list)) = self.loaded_files.as_ref() else {
-            self.clear_files_view();
-            self.request_files_if_needed(revision, pkg, arch);
-            return;
-        };
-        if *loaded_rev != revision || loaded_pkg != &pkg {
-            self.clear_files_view();
-            self.request_files_if_needed(revision, pkg, arch);
-            return;
-        }
-
-        self.files_total = loaded_list.len();
-        let query = self.list.files_query.trim().to_lowercase();
-        let key = (revision, pkg, query.clone());
-        if self.files_key.as_ref() == Some(&key) {
-            return;
-        }
-
-        let files = if query.is_empty() {
-            loaded_list.clone()
-        } else {
-            loaded_list
-                .iter()
-                .filter(|path| path.to_lowercase().contains(&query))
-                .cloned()
-                .collect()
-        };
-        self.files = Arc::new(files.into_iter().map(Into::into).collect());
-        self.files_key = Some(key);
-    }
-
-    fn clear_files_view(&mut self) {
-        self.files = Arc::new(Vec::new());
-        self.files_key = None;
-        self.files_total = 0;
-    }
-
-    fn request_files_if_needed(&mut self, revision: usize, pkg: String, arch: String) {
-        let req_key = (revision, pkg.clone());
-        if self.requested_files_key.as_ref() == Some(&req_key) {
-            return;
-        }
-        if self.tasks.load_package_files(revision, pkg, arch) {
-            self.requested_files_key = Some(req_key);
-        }
+        self.files_state.sync(
+            &self.catalog,
+            self.list.selected.as_deref(),
+            &self.list.files_query,
+            &self.tasks,
+        );
     }
 
     /// 选中/取消选中一行；文件过滤词随选择一起清空。
@@ -384,9 +332,8 @@ impl DebDeckApp {
             return;
         }
         self.list.select(pkg);
-        self.selected_pkg = self.list.selected.clone();
-        self.files_key = None;
-        self.clear_files_input = false;
+        self.files_state
+            .reset_for_selection(self.list.selected.as_deref());
         self.files_input
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.ensure_files();
@@ -415,8 +362,6 @@ impl DebDeckApp {
 
 impl Render for DebDeckApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.flush_clear_files_input(window, cx);
-
         let content = if self.catalog.is_ready() {
             crate::ui::show(self, window, cx).into_any_element()
         } else {
@@ -424,26 +369,7 @@ impl Render for DebDeckApp {
         };
         let modal = crate::ui::modals::show(self, window, cx);
         let toast = crate::ui::show_toast(self, window, cx);
-        let title_bar = TitleBar::new().on_close_window(|_, _, cx| cx.quit()).child(
-            h_flex()
-                .items_center()
-                .gap(px(8.0))
-                .children(self.app_icon.clone().map(|icon| {
-                    img(icon)
-                        .w(px(APP_ICON_SIZE))
-                        .h(px(APP_ICON_SIZE))
-                        .rounded(px(6.0))
-                        .object_fit(ObjectFit::Cover)
-                }))
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(APP_NAME),
-                )
-                .child(div().flex_grow(1.0))
-                .child(self_update_button(self, cx)),
-        );
+        let title_bar = crate::ui::show_title_bar(self, cx);
 
         div()
             .id("debdeck-root")
@@ -460,30 +386,4 @@ impl Render for DebDeckApp {
             .children(modal)
             .children(toast)
     }
-}
-
-/// 标题栏版本入口：有更新时突出显示，点击打开同一更新弹窗。
-fn self_update_button(app: &DebDeckApp, cx: &mut Context<DebDeckApp>) -> Button {
-    let has_update = app.self_update.has_update();
-    let available = app.self_update.available_version();
-    let label = if let Some(version) = available.as_ref() {
-        format!("可更新 v{version}")
-    } else if has_update {
-        "重启以完成更新".to_string()
-    } else {
-        format!("v{}", env!("CARGO_PKG_VERSION"))
-    };
-    let mut button = Button::new("self-update-entry")
-        .label(label)
-        .compact()
-        .tooltip("检查并安装 DebDeck 更新")
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.open_self_update_dialog(cx);
-        }));
-    button = if has_update {
-        button.primary()
-    } else {
-        button.ghost()
-    };
-    button
 }

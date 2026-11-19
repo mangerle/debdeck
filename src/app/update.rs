@@ -7,27 +7,29 @@
 //! 绘制与状态更新仍然分离：后端只能改状态，不能碰窗口；同一动作的视觉反馈
 //! 在下一帧出现，这是事件驱动界面的正常工作方式。
 
+use gpui_kit::Context;
+
 use crate::app::state::DebDeckApp;
 use crate::runtime::BackendEvent;
 
 impl DebDeckApp {
-    pub(crate) fn poll_events(&mut self) {
+    pub(crate) fn poll_events(&mut self, cx: &mut Context<Self>) {
         // 每帧最多处理 64 条事件：加载阶段的 Stage 事件很密集，设上限保证界面
         // 不会因为事件洪水而卡住。未处理的事件留在通道里，下一帧继续。
         const MAX_EVENTS_PER_FRAME: usize = 64;
 
         for _ in 0..MAX_EVENTS_PER_FRAME {
             let Ok(event) = self.rx.try_recv() else { break };
-            self.apply_event(event);
+            self.apply_event(event, cx);
         }
     }
 
-    fn apply_event(&mut self, event: BackendEvent) {
+    fn apply_event(&mut self, event: BackendEvent, cx: &mut Context<Self>) {
         match event {
             BackendEvent::Stage(stage) => self.catalog.set_stage(stage),
             BackendEvent::CatalogUpdated(update) => {
                 if self.catalog.apply(update) {
-                    self.sync_catalog_view();
+                    self.sync_catalog_view(cx);
                 }
             }
             BackendEvent::DpkgChanged => {
@@ -81,8 +83,7 @@ impl DebDeckApp {
                 if revision == self.catalog.revision()
                     && self.list.selected.as_deref() == Some(pkg.as_str())
                 {
-                    self.loaded_files = Some((revision, pkg, files));
-                    self.files_key = None;
+                    self.files_state.on_loaded(revision, pkg, files);
                     self.ensure_files();
                 }
             }

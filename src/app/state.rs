@@ -17,7 +17,7 @@ use std::sync::atomic::AtomicBool;
 use async_channel::Receiver;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::select::{SearchableVec, SelectState};
-use gpui_kit::{Entity, RenderImage, SharedString, Task};
+use gpui_kit::{AnyWindowHandle, Entity, RenderImage, Task};
 
 use crate::model::{AppEntry, DesktopEntry, RepoPackage};
 use crate::runtime::{BackendEvent, CancelToken, OperationId, TaskManager};
@@ -25,6 +25,7 @@ use crate::util::AppPaths;
 
 use super::catalog::Catalog;
 use super::dialogs::Dialogs;
+use super::files::DetailFilesState;
 use super::list::ListView;
 
 /// 列表筛选维度。
@@ -379,26 +380,10 @@ pub(crate) struct DebDeckApp {
     pub(crate) search_input: Entity<InputState>,
     pub(crate) files_input: Entity<InputState>,
     pub(crate) sort_select: SortSelect,
-    /// `Catalog::entries` 的快照，随 revision 更新；虚拟列表闭包持有它。
-    pub(crate) entries: Arc<[AppEntry]>,
-    /// 快照对应的 Catalog 版本号。
-    pub(crate) entries_revision: usize,
-    /// 当前可见行下标快照。
-    pub(crate) visible: Arc<[usize]>,
-    /// 快照对应的选中项，用来判断是否需要清理文件过滤。
-    pub(crate) selected_pkg: Option<String>,
-    /// 选中项在无窗口上下文中发生变化时，延后到下次绘制同步清空文件输入框。
-    pub(crate) clear_files_input: bool,
-    /// 当前选中包按需加载的完整文件清单：`(Catalog 版本, 包名, 文件列表)`。
-    pub(crate) loaded_files: Option<(usize, String, Vec<String>)>,
-    /// 已发起异步读取的凭据，避免同版本同包重复提交。
-    pub(crate) requested_files_key: Option<(usize, String)>,
-    /// 当前详情页的文件快照（已按过滤词筛选）。
-    pub(crate) files: Arc<Vec<SharedString>>,
-    /// 文件快照的凭据：`(Catalog 版本, 包名, 过滤词)`。
-    pub(crate) files_key: Option<(usize, String, String)>,
-    /// 未过滤的文件总数，供「共 N 个文件」显示。
-    pub(crate) files_total: usize,
+    /// 所属主窗口句柄，用于在无 `&mut Window` 上下文中异步重置输入框等 UI 控件。
+    pub(crate) window_handle: AnyWindowHandle,
+    /// 详情页「文件」标签页状态。
+    pub(crate) files_state: DetailFilesState,
     /// Toast 代次：替换旧提示后，旧的定时任务据此放弃清理。
     pub(crate) toast_generation: u64,
     /// DebDeck 自身版本更新状态。

@@ -18,8 +18,12 @@ pub mod status_bar;
 pub mod theme;
 pub mod toolbar;
 
-use gpui_kit::component::{h_resizable, resizable_panel, v_flex};
-use gpui_kit::{Context, Hsla, IntoElement, ParentElement as _, Styled as _, Window, div, px};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::{TitleBar, h_resizable, resizable_panel, v_flex};
+use gpui_kit::{
+    Context, FontWeight, Hsla, IntoElement, ObjectFit, ParentElement as _, Styled as _,
+    StyledImage as _, Window, div, img, px,
+};
 
 pub use icons::window_icon;
 pub(crate) use icons::{
@@ -29,6 +33,7 @@ pub(crate) use notices::{show_loading, show_toast};
 
 use crate::app::{DebDeckApp, RowStatus};
 use crate::model::AppEntry;
+use crate::util::APP_NAME;
 
 /// 绘制主界面（顶栏、状态栏、列表、详情）。
 pub(crate) fn show(
@@ -55,6 +60,57 @@ pub(crate) fn show(
         .child(toolbar)
         .child(div().flex_1().min_h(px(0.0)).child(main))
         .child(status)
+}
+
+/// 绘制主窗口自绘标题栏（应用图标、标题与自更新入口）。
+pub(crate) fn show_title_bar(app: &DebDeckApp, cx: &mut Context<DebDeckApp>) -> TitleBar {
+    use gpui_kit::component::h_flex;
+
+    TitleBar::new().on_close_window(|_, _, cx| cx.quit()).child(
+        h_flex()
+            .items_center()
+            .gap(px(8.0))
+            .children(app.app_icon.clone().map(|icon| {
+                img(icon)
+                    .w(px(APP_ICON_SIZE))
+                    .h(px(APP_ICON_SIZE))
+                    .rounded(px(6.0))
+                    .object_fit(ObjectFit::Cover)
+            }))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(APP_NAME),
+            )
+            .child(div().flex_grow(1.0))
+            .child(self_update_button(app, cx)),
+    )
+}
+
+/// 标题栏版本入口：有更新时突出显示，点击打开同一更新弹窗。
+fn self_update_button(app: &DebDeckApp, cx: &mut Context<DebDeckApp>) -> Button {
+    let has_update = app.self_update.has_update();
+    let available = app.self_update.available_version();
+    let label = if let Some(version) = available.as_ref() {
+        format!("可更新 v{version}")
+    } else if has_update {
+        "重启以完成更新".to_string()
+    } else {
+        format!("v{}", env!("CARGO_PKG_VERSION"))
+    };
+    let button = Button::new("self-update-entry")
+        .label(label)
+        .compact()
+        .tooltip("检查并安装 DebDeck 更新")
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.open_self_update_dialog(cx);
+        }));
+    if has_update {
+        button.primary()
+    } else {
+        button.ghost()
+    }
 }
 
 /// 列表与详情共用的状态标签：文字 + 前景色。
