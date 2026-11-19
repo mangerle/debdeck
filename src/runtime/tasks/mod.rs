@@ -49,8 +49,8 @@ const NET_QUEUE_CAPACITY: usize = 4;
 /// 自更新必须在同一时刻只有一个任务在途；额外槽位只承接检查、下载、安装的
 /// 短时排队，界面状态机会阻止重复点击，容量仍然有界。
 const UPDATE_QUEUE_CAPACITY: usize = 4;
-/// 图标后台解码队列容量；快速切换选中行时只保留合理排队，超出直接丢弃旧请求。
-const ICON_QUEUE_CAPACITY: usize = 32;
+/// 轻量按需资源队列（图标解码与单包文件清单读取）；超出直接丢弃，避免阻塞主线程。
+const ASSET_QUEUE_CAPACITY: usize = 32;
 
 /// 任务提交失败。有界队列满时快速失败，由界面明确提示而不是静默丢任务。
 #[derive(Debug, thiserror::Error)]
@@ -119,10 +119,17 @@ enum UpdateJob {
     ConfirmSuccess,
 }
 
-/// 应用图标后台解码任务。
-struct IconJob {
-    name: String,
-    max_size: u32,
+/// 轻量按需资源任务：图标解码或单包文件清单读取。
+enum AssetJob {
+    Icon {
+        name: String,
+        max_size: u32,
+    },
+    PackageFiles {
+        revision: usize,
+        pkg: String,
+        arch: String,
+    },
 }
 
 /// worker 线程共享的执行环境。
@@ -141,7 +148,7 @@ pub struct TaskManager {
     system_tx: Sender<SystemJob>,
     net_tx: Sender<NetJob>,
     update_tx: Sender<UpdateJob>,
-    icon_tx: Sender<IconJob>,
+    asset_tx: Sender<AssetJob>,
     /// 排队去重标记，与对应队列一起交给 worker。
     pending_installed: Arc<AtomicBool>,
     pending_repository: Arc<AtomicBool>,
@@ -174,7 +181,7 @@ impl TaskManager {
         let (system_tx, system_rx) = async_channel::bounded(SYSTEM_QUEUE_CAPACITY);
         let (net_tx, net_rx) = async_channel::bounded(NET_QUEUE_CAPACITY);
         let (update_tx, update_rx) = async_channel::bounded(UPDATE_QUEUE_CAPACITY);
-        let (icon_tx, icon_rx) = async_channel::bounded(ICON_QUEUE_CAPACITY);
+        let (asset_tx, asset_rx) = async_channel::bounded(ASSET_QUEUE_CAPACITY);
 
         let pending_installed = Arc::new(AtomicBool::new(false));
         let pending_repository = Arc::new(AtomicBool::new(false));
@@ -185,7 +192,7 @@ impl TaskManager {
             worker::spawn_system(system_rx, worker.clone()),
             worker::spawn_download(net_rx, worker.clone()),
             worker::spawn_update(update_rx, worker.clone()),
-            worker::spawn_icon(icon_rx, worker.clone()),
+            worker::spawn_asset(asset_rx, worker.clone()),
         ];
         let watcher = Watcher::start(worker.layout.clone(), worker.sink.clone());
 
@@ -196,7 +203,7 @@ impl TaskManager {
             system_tx,
             net_tx,
             update_tx,
-            icon_tx,
+            asset_tx,
             pending_installed,
             pending_repository,
             workers,
@@ -333,7 +340,20 @@ impl TaskManager {
 
     /// 请求在后台线程解析并解码应用图标；队列满时静默忽略，避免阻塞主线程。
     pub fn load_icon(&self, name: String, max_size: u32) -> bool {
-        self.icon_tx.try_send(IconJob { name, max_size }).is_ok()
+        self.asset_tx
+            .try_send(AssetJob::Icon { name, max_size })
+            .is_ok()
+    }
+
+    /// 请求在后台线程按需读取单个已安装包的文件清单。
+    pub fn load_package_files(&self, revision: usize, pkg: String, arch: String) -> bool {
+        self.asset_tx
+            .try_send(AssetJob::PackageFiles {
+                revision,
+                pkg,
+                arch,
+            })
+            .is_ok()
     }
 }
 
@@ -347,7 +367,7 @@ impl Drop for TaskManager {
         self.system_tx.close();
         self.net_tx.close();
         self.update_tx.close();
-        self.icon_tx.close();
+        self.asset_tx.close();
 
         for handle in self.workers.drain(..) {
             if handle.join().is_err() {

@@ -8,13 +8,14 @@
 //! 不必再全量重读 `status`。
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::backend::{BackendError, Result};
 
-use crate::deb822::parse_stanzas;
+use crate::deb822::{Stanza, for_each_stanza, parse_stanzas};
 use crate::model::{DesktopEntry, DpkgState, InstalledData, InstalledPackage, PackageMetadata};
 
 use super::desktop::parse_desktop_file;
@@ -33,6 +34,7 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
     })?;
 
     let stanzas = parse_stanzas(&content);
+    let info_dir = layout.dpkg_info_dir.canonicalize().ok();
     let mut packages: HashMap<String, InstalledPackage> = HashMap::with_capacity(stanzas.len());
 
     for (index, stanza) in stanzas.iter().enumerate() {
@@ -45,18 +47,19 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
             continue;
         }
         let name = metadata.name.clone();
-        let files = installed_files(layout, &name, &metadata.arch).unwrap_or_default();
-        let desktop = find_desktop_entry(&name, &files);
-        let updated = info_file(layout, &name, &metadata.arch, "list")
+        let list_path = locate_info_file_in(info_dir.as_deref(), &name, &metadata.arch, "list");
+        let updated = list_path
+            .as_deref()
             .and_then(|path| fs::metadata(path).ok())
             .and_then(|meta| meta.modified().ok());
+        let desktop = list_path
+            .as_deref()
+            .and_then(|path| find_desktop_entry_from_list(&name, path));
         packages.insert(
             name,
             InstalledPackage {
                 metadata,
                 dpkg,
-                control: stanza.clone(),
-                files,
                 desktop,
                 updated,
             },
@@ -71,6 +74,17 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
 /// 文件名来自 dpkg 状态库，仍按外部数据处理：拒绝任何路径组件，并在命中后
 /// 规范化真实路径，确认它没有因符号链接逃出受控的 `dpkg_info_dir`。
 pub fn info_file(layout: &FsLayout, pkg_name: &str, arch: &str, suffix: &str) -> Option<PathBuf> {
+    let base = layout.dpkg_info_dir.canonicalize().ok()?;
+    locate_info_file_in(Some(&base), pkg_name, arch, suffix)
+}
+
+fn locate_info_file_in(
+    base: Option<&Path>,
+    pkg_name: &str,
+    arch: &str,
+    suffix: &str,
+) -> Option<PathBuf> {
+    let base = base?;
     if !safe_info_component(pkg_name)
         || !safe_info_component(suffix)
         || (!arch.is_empty() && !safe_info_component(arch))
@@ -78,16 +92,15 @@ pub fn info_file(layout: &FsLayout, pkg_name: &str, arch: &str, suffix: &str) ->
         return None;
     }
 
-    let base = layout.dpkg_info_dir.canonicalize().ok()?;
     let plain_name = format!("{pkg_name}.{suffix}");
-    if let Some(plain) = checked_info_file(&base, &plain_name)
+    if let Some(plain) = checked_info_file(base, &plain_name)
         && plain.is_file()
     {
         return Some(plain);
     }
     if !arch.is_empty() {
         let qualified_name = format!("{pkg_name}:{arch}.{suffix}");
-        if let Some(qualified) = checked_info_file(&base, &qualified_name)
+        if let Some(qualified) = checked_info_file(base, &qualified_name)
             && qualified.is_file()
         {
             return Some(qualified);
@@ -139,14 +152,56 @@ fn is_application_desktop(path: &str, pkg_name: &str) -> bool {
         || path.starts_with(&opt_prefix)
 }
 
-/// 从文件清单里挑一个桌面条目作为启动入口。
+/// 按需从 `/var/lib/dpkg/status` 中流式查找单个已安装包的原始控制段落。
 ///
-/// 多个候选时按路径排序取第一个可解析的，保证同一台机器上结果稳定。
-fn find_desktop_entry(pkg_name: &str, files: &[String]) -> Option<DesktopEntry> {
-    let mut candidates: Vec<&String> = files
-        .iter()
-        .filter(|path| is_application_desktop(path, pkg_name))
-        .collect();
+/// # Errors
+/// 读取状态库失败时返回 I/O 错误。
+pub fn load_package_control(
+    layout: &FsLayout,
+    pkg_name: &str,
+    arch: &str,
+) -> Result<Option<Stanza>> {
+    let file = File::open(&layout.dpkg_status).map_err(|source| {
+        BackendError::io("读取 dpkg 状态库", layout.dpkg_status.display(), source)
+    })?;
+    let mut matched = None;
+    for_each_stanza(BufReader::new(file), |stanza| {
+        if matched.is_some() {
+            return;
+        }
+        let name = stanza.get_first_line("Package");
+        if name != pkg_name {
+            return;
+        }
+        let stanza_arch = stanza.get_first_line("Architecture");
+        if arch.is_empty() || stanza_arch == arch {
+            matched = Some(stanza);
+        }
+    })
+    .map_err(|source| BackendError::io("解析 dpkg 状态库", layout.dpkg_status.display(), source))?;
+    Ok(matched)
+}
+
+/// 从 `<包>.list` 流式扫描 `.desktop` 路径并挑选桌面入口，避免把整份文件清单读入内存。
+fn find_desktop_entry_from_list(pkg_name: &str, list_path: &Path) -> Option<DesktopEntry> {
+    let file = File::open(list_path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut candidates: Vec<String> = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line).ok()?;
+        if read == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if is_application_desktop(trimmed, pkg_name) {
+            candidates.push(trimmed.to_string());
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
     candidates.sort();
     candidates.iter().find_map(|path| {
         let mut entry = parse_desktop_file(Path::new(path))?;
@@ -230,11 +285,17 @@ mod tests {
         assert_eq!(demo.metadata.version, "1.2.3");
         assert_eq!(demo.metadata.installed_size_kb, 2048);
         assert_eq!(demo.metadata.depends, "libc6 (>= 2.39), libfoo");
-        assert_eq!(demo.files, ["/usr/bin/demo", "/usr/share/demo/data"]);
         assert!(demo.dpkg.is_installed());
         assert!(data.packages["held"].dpkg.is_held());
-        // 原始段落被缓存，重打包可直接复用。
-        assert_eq!(demo.control.get_first_line("Package"), "demo");
+        // 文件清单与原始控制段落改为按需读取。
+        assert_eq!(
+            installed_files(&layout, "demo", "amd64").unwrap(),
+            ["/usr/bin/demo", "/usr/share/demo/data"]
+        );
+        let control = load_package_control(&layout, "demo", "amd64")
+            .unwrap()
+            .expect("应能按需读回原始控制段落");
+        assert_eq!(control.get_first_line("Package"), "demo");
 
         let _ = fs::remove_dir_all(&root);
     }

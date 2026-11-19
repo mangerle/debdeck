@@ -29,7 +29,9 @@ use std::time::Duration;
 
 use crate::backend::{BackendError, Result};
 
+use crate::backend::dpkg;
 use crate::backend::fs_layout::FsLayout;
+use crate::deb822::Stanza;
 use crate::model::InstalledPackage;
 use crate::util::{command_exists, run_command, sanitize_file_component};
 
@@ -60,7 +62,13 @@ pub struct BuildOptions<'a> {
 /// 从已安装状态重建 deb 包，产物写入 `options.out_dir`。
 pub fn build_package(mut options: BuildOptions<'_>) -> Result<BuildOutcome> {
     let package = options.package;
-    if package.files.is_empty() {
+    let package_files = dpkg::installed_files(
+        options.layout,
+        &package.metadata.name,
+        &package.metadata.arch,
+    )
+    .unwrap_or_default();
+    if package_files.is_empty() {
         return Err(BackendError::invalid(
             "离线重建安装包",
             "没有可用的安装文件列表，无法离线提取安装包",
@@ -69,6 +77,12 @@ pub fn build_package(mut options: BuildOptions<'_>) -> Result<BuildOutcome> {
     if !command_exists("dpkg-deb") {
         return Err(BackendError::missing_program("离线重建安装包", "dpkg-deb"));
     }
+    let control = dpkg::load_package_control(
+        options.layout,
+        &package.metadata.name,
+        &package.metadata.arch,
+    )?
+    .unwrap_or_else(Stanza::default);
 
     (options.progress)("正在准备构建目录…");
     let work = temp_work_dir(&package.metadata.name);
@@ -79,18 +93,19 @@ pub fn build_package(mut options: BuildOptions<'_>) -> Result<BuildOutcome> {
         .map_err(|source| BackendError::io("创建构建目录", work.display(), source))?;
 
     // 用闭包 + 立即清理代替 defer，保证任何提前返回都不会留下临时目录。
-    let result = build_in_work_dir(&mut options, &work);
+    let result = build_in_work_dir(&mut options, &package_files, &control, &work);
     let _ = fs::remove_dir_all(&work);
     result
 }
 
-fn build_in_work_dir(options: &mut BuildOptions<'_>, work: &Path) -> Result<BuildOutcome> {
-    let copied = files::copy_installed_files(
-        &options.package.files,
-        work,
-        options.cancel,
-        options.progress,
-    )?;
+fn build_in_work_dir(
+    options: &mut BuildOptions<'_>,
+    package_files: &[String],
+    control: &Stanza,
+    work: &Path,
+) -> Result<BuildOutcome> {
+    let copied =
+        files::copy_installed_files(package_files, work, options.cancel, options.progress)?;
     if copied.copied_files.is_empty() {
         return Err(BackendError::invalid(
             "离线重建安装包",
@@ -102,6 +117,7 @@ fn build_in_work_dir(options: &mut BuildOptions<'_>, work: &Path) -> Result<Buil
     control::write_control(control::ControlWrite {
         debian_dir: &debian_dir,
         package: options.package,
+        control,
         layout: options.layout,
         data_bytes: copied.data_bytes,
         progress: options.progress,
@@ -220,7 +236,10 @@ mod tests {
         let package = installed
             .packages
             .values()
-            .find(|package| (5..500).contains(&package.files.len()))
+            .find(|package| {
+                dpkg::installed_files(&layout, &package.metadata.name, &package.metadata.arch)
+                    .is_some_and(|files| (5..500).contains(&files.len()))
+            })
             .expect("应有一个文件数适中的已安装包");
 
         let out_dir = std::env::temp_dir().join(format!("debdeck-repack-{}", std::process::id()));

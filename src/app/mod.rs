@@ -357,6 +357,8 @@ impl DebDeckApp {
             visible: Arc::new(Vec::new()),
             selected_pkg: None,
             clear_files_input: false,
+            loaded_files: None,
+            requested_files_key: None,
             files: Arc::new(Vec::new()),
             files_key: None,
             files_total: 0,
@@ -478,32 +480,42 @@ impl DebDeckApp {
             .request_if_needed(icon_name, &self.tasks, DETAIL_ICON_TEXTURE_SIZE);
     }
 
-    fn ensure_files(&mut self) {
+    pub(crate) fn ensure_files(&mut self) {
         let Some(entry) = self.list.selected_entry(&self.catalog) else {
-            self.files = Arc::new(Vec::new());
-            self.files_key = None;
-            self.files_total = 0;
+            self.clear_files_view();
             return;
         };
         let Some(package) = self.catalog.installed_package(&entry.pkg) else {
-            self.files = Arc::new(Vec::new());
-            self.files_key = None;
-            self.files_total = 0;
+            self.clear_files_view();
             return;
         };
 
-        self.files_total = package.files.len();
+        let revision = self.catalog.revision();
+        let pkg = entry.pkg.clone();
+        let arch = package.metadata.arch.clone();
+
+        let Some((loaded_rev, loaded_pkg, loaded_list)) = self.loaded_files.as_ref() else {
+            self.clear_files_view();
+            self.request_files_if_needed(revision, pkg, arch);
+            return;
+        };
+        if *loaded_rev != revision || loaded_pkg != &pkg {
+            self.clear_files_view();
+            self.request_files_if_needed(revision, pkg, arch);
+            return;
+        }
+
+        self.files_total = loaded_list.len();
         let query = self.list.files_query.trim().to_lowercase();
-        let key = (self.catalog.revision(), entry.pkg.clone(), query.clone());
+        let key = (revision, pkg, query.clone());
         if self.files_key.as_ref() == Some(&key) {
             return;
         }
 
         let files = if query.is_empty() {
-            package.files.clone()
+            loaded_list.clone()
         } else {
-            package
-                .files
+            loaded_list
                 .iter()
                 .filter(|path| path.to_lowercase().contains(&query))
                 .cloned()
@@ -511,6 +523,22 @@ impl DebDeckApp {
         };
         self.files = Arc::new(files.into_iter().map(Into::into).collect());
         self.files_key = Some(key);
+    }
+
+    fn clear_files_view(&mut self) {
+        self.files = Arc::new(Vec::new());
+        self.files_key = None;
+        self.files_total = 0;
+    }
+
+    fn request_files_if_needed(&mut self, revision: usize, pkg: String, arch: String) {
+        let req_key = (revision, pkg.clone());
+        if self.requested_files_key.as_ref() == Some(&req_key) {
+            return;
+        }
+        if self.tasks.load_package_files(revision, pkg, arch) {
+            self.requested_files_key = Some(req_key);
+        }
     }
 
     /// 选中/取消选中一行；文件过滤词随选择一起清空。

@@ -306,8 +306,6 @@ mod tests {
                         ..Default::default()
                     },
                     dpkg: DpkgState::parse("install ok installed"),
-                    control: crate::deb822::Stanza::default(),
-                    files: vec![],
                     desktop: None,
                     updated: None,
                 },

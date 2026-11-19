@@ -234,7 +234,6 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deb822::Stanza;
     use crate::model::{DpkgState, PackageMetadata};
 
     fn installed_with(name: &str, version: &str) -> InstalledData {
@@ -250,8 +249,6 @@ mod tests {
                     ..Default::default()
                 },
                 dpkg: DpkgState::parse("install ok installed"),
-                control: Stanza::default(),
-                files: vec![],
                 desktop: None,
                 updated: None,
             },

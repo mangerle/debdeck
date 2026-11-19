@@ -20,7 +20,7 @@ use crate::runtime::events::{
 use crate::util::{Throttle, current_arch, format_bytes};
 
 use super::{
-    CancelToken, CatalogJob, IconJob, InstalledPackage, NetJob, ScanJob, SystemJob, UpdateJob,
+    AssetJob, CancelToken, CatalogJob, InstalledPackage, NetJob, ScanJob, SystemJob, UpdateJob,
     Worker,
 };
 
@@ -254,15 +254,28 @@ pub(super) fn spawn_update(rx: Receiver<UpdateJob>, worker: Worker) -> JoinHandl
     })
 }
 
-pub(super) fn spawn_icon(rx: Receiver<IconJob>, worker: Worker) -> JoinHandle<()> {
+pub(super) fn spawn_asset(rx: Receiver<AssetJob>, worker: Worker) -> JoinHandle<()> {
     thread::spawn(move || {
-        let Worker { sink, .. } = worker;
+        let Worker { layout, sink, .. } = worker;
         while let Ok(job) = rx.recv_blocking() {
-            let image = load_icon_bgra(&job.name, job.max_size);
-            sink.send(BackendEvent::IconLoaded {
-                name: job.name,
-                image,
-            });
+            match job {
+                AssetJob::Icon { name, max_size } => {
+                    let image = load_icon_bgra(&name, max_size);
+                    sink.send(BackendEvent::IconLoaded { name, image });
+                }
+                AssetJob::PackageFiles {
+                    revision,
+                    pkg,
+                    arch,
+                } => {
+                    let files = dpkg::installed_files(&layout, &pkg, &arch).unwrap_or_default();
+                    sink.send(BackendEvent::PackageFilesLoaded {
+                        revision,
+                        pkg,
+                        files,
+                    });
+                }
+            }
         }
     })
 }

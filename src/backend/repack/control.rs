@@ -14,7 +14,7 @@ use crate::backend::{BackendError, Result};
 
 use crate::backend::dpkg::info_file;
 use crate::backend::fs_layout::FsLayout;
-use crate::deb822::write_field;
+use crate::deb822::{Stanza, write_field};
 use crate::model::{InstalledPackage, PackageMetadata};
 
 use super::set_mode;
@@ -87,6 +87,8 @@ pub struct ControlWrite<'a> {
     pub debian_dir: &'a Path,
     /// 已安装软件包记录。
     pub package: &'a InstalledPackage,
+    /// 按需读取的原始控制段落。
+    pub control: &'a Stanza,
     /// 系统路径布局。
     pub layout: &'a FsLayout,
     /// 已复制文件的总字节数。
@@ -100,6 +102,7 @@ pub fn write_control(input: ControlWrite<'_>) -> Result<()> {
     let ControlWrite {
         debian_dir,
         package,
+        control,
         layout,
         data_bytes,
         progress,
@@ -108,7 +111,7 @@ pub fn write_control(input: ControlWrite<'_>) -> Result<()> {
     fs::create_dir_all(debian_dir)
         .map_err(|source| BackendError::io("创建控制文件目录", debian_dir.display(), source))?;
     let installed_size_kb = data_bytes.div_ceil(1024);
-    let control = build_control(package, installed_size_kb);
+    let control = build_control(&package.metadata, control, installed_size_kb);
     let control_path = debian_dir.join("control");
     fs::write(&control_path, control)
         .map_err(|source| BackendError::io("写入 control 文件", control_path.display(), source))?;
@@ -157,12 +160,11 @@ fn copy_extra_control_file(input: &ExtraControlFile<'_>) -> Result<()> {
 }
 
 /// 生成 control 文本。
-fn build_control(package: &InstalledPackage, installed_size_kb: u64) -> String {
-    let metadata = &package.metadata;
-    let mut output = String::with_capacity(package.control.fields.len().saturating_mul(32));
-    let mut written: HashSet<&str> = HashSet::with_capacity(package.control.fields.len());
+fn build_control(metadata: &PackageMetadata, control: &Stanza, installed_size_kb: u64) -> String {
+    let mut output = String::with_capacity(control.fields.len().saturating_mul(32));
+    let mut written: HashSet<&str> = HashSet::with_capacity(control.fields.len());
 
-    for (key, value) in &package.control.fields {
+    for (key, value) in &control.fields {
         if !CONTROL_FIELDS.contains(&key.as_str()) {
             continue;
         }
@@ -222,26 +224,20 @@ fn fallback_value(key: &str, metadata: &PackageMetadata, installed_size_kb: u64)
 mod tests {
     use super::*;
     use crate::deb822::parse_stanzas;
-    use crate::model::DpkgState;
 
-    fn package(stanza_text: &str) -> InstalledPackage {
+    fn metadata_and_control(stanza_text: &str) -> (PackageMetadata, Stanza) {
         let stanzas = parse_stanzas(stanza_text);
-        InstalledPackage {
-            metadata: PackageMetadata::from_stanza(&stanzas[0]),
-            dpkg: DpkgState::parse("install ok installed"),
-            control: stanzas[0].clone(),
-            files: Vec::new(),
-            desktop: None,
-            updated: None,
-        }
+        let control = stanzas.into_iter().next().unwrap_or_default();
+        let metadata = PackageMetadata::from_stanza(&control);
+        (metadata, control)
     }
 
     #[test]
     fn writes_control_with_recomputed_size() {
-        let package = package(
+        let (metadata, stanza) = metadata_and_control(
             "Package: demo\nStatus: install ok installed\nVersion: 1.0\nArchitecture: amd64\nMaintainer: Demo <demo@example.com>\nInstalled-Size: 999\nDescription: demo\n long\n",
         );
-        let control = build_control(&package, 12);
+        let control = build_control(&metadata, &stanza, 12);
         assert!(!control.contains("Status:"), "本地状态字段不应进入 control");
         assert!(control.contains("Installed-Size: 12\n"));
         assert!(!control.contains("Installed-Size: 999"));
@@ -250,10 +246,10 @@ mod tests {
 
     #[test]
     fn whitelist_ignores_internal_fields() {
-        let package = package(
+        let (metadata, stanza) = metadata_and_control(
             "Package: demo\nStatus: install ok installed\nConfig-Version: 2\nOriginal-Maintainer: Debian\n",
         );
-        let control = build_control(&package, 1);
+        let control = build_control(&metadata, &stanza, 1);
         assert!(control.contains("Original-Maintainer: Debian"));
         assert!(!control.contains("Status:"));
         assert!(!control.contains("Config-Version:"));
@@ -261,8 +257,9 @@ mod tests {
 
     #[test]
     fn adds_missing_required_fields() {
-        let package = package("Package: demo\nVersion: 1.0\nDescription: only a summary\n");
-        let control = build_control(&package, 7);
+        let (metadata, stanza) =
+            metadata_and_control("Package: demo\nVersion: 1.0\nDescription: only a summary\n");
+        let control = build_control(&metadata, &stanza, 7);
         for field in [
             "Package:",
             "Version:",

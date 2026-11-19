@@ -189,18 +189,14 @@ pub struct DesktopEntry {
     pub menu_state: MenuEntryState,
 }
 
-/// 一个已安装软件包的完整视图。
+/// 一个已安装软件包的轻量视图。
+///
+/// 原始 `control` 段落与完整文件清单仅在「文件」标签页或离线重打包时按需读取，
+/// 避免首屏启动将数千个 `.list` 与控制段落全量常驻内存。
 #[derive(Clone, Debug)]
 pub struct InstalledPackage {
     pub metadata: PackageMetadata,
     pub dpkg: DpkgState,
-    /// dpkg status 里该包的原始段落。
-    ///
-    /// 随安装数据一起缓存，是为了让离线重打包直接复用已解析结果；
-    /// 早期实现为此重新读取并全量解析 `/var/lib/dpkg/status`。
-    pub control: Stanza,
-    /// 包内文件清单（来自 `<包>.list`），重打包与文件列表页的数据源。
-    pub files: Vec<String>,
     pub desktop: Option<DesktopEntry>,
     /// 安装信息最后修改时间（取 `<包>.list` 的 mtime）。
     pub updated: Option<SystemTime>,
@@ -403,8 +399,6 @@ mod tests {
                     selection: DpkgSelection::Install,
                     status: DpkgStatus::Installed,
                 },
-                control: Stanza::default(),
-                files: vec![],
                 desktop: None,
                 updated: None,
             },

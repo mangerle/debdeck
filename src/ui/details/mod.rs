@@ -52,7 +52,7 @@ pub(crate) fn show(
 
     let header = show_header(&app.icons, &context, cx);
     let actions = show_actions(&app.catalog, &app.paths, &context, cx);
-    let tabs = show_tabs(&app.list, &context, cx);
+    let tabs = show_tabs(&app.list, &context, app.files_total, cx);
     let body = match app.list.detail_tab {
         DetailTab::Info => info::show(&context, cx),
         DetailTab::Files => files::show(
@@ -93,12 +93,18 @@ fn placeholder(cx: &mut Context<DebDeckApp>) -> AnyElement {
 }
 
 /// 标签页切换条。激活项用一段品牌色下划线标出。
-fn show_tabs(list: &ListView, context: &DetailContext, cx: &mut Context<DebDeckApp>) -> AnyElement {
+fn show_tabs(
+    list: &ListView,
+    context: &DetailContext,
+    files_total: usize,
+    cx: &mut Context<DebDeckApp>,
+) -> AnyElement {
     let border = cx.theme().border;
-    let files_label = format!(
-        "文件 ({})",
-        context.installed.map_or(0, |package| package.files.len())
-    );
+    let files_label = if context.installed.is_some() && files_total > 0 {
+        format!("文件 ({files_total})")
+    } else {
+        "文件".to_string()
+    };
     let active = list.detail_tab;
 
     h_flex()

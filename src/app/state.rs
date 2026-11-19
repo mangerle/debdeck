@@ -353,6 +353,10 @@ pub(crate) struct DebDeckApp {
     pub(crate) selected_pkg: Option<String>,
     /// 选中项在无窗口上下文中发生变化时，延后到下次绘制同步清空文件输入框。
     pub(crate) clear_files_input: bool,
+    /// 当前选中包按需加载的完整文件清单：`(Catalog 版本, 包名, 文件列表)`。
+    pub(crate) loaded_files: Option<(usize, String, Vec<String>)>,
+    /// 已发起异步读取的凭据，避免同版本同包重复提交。
+    pub(crate) requested_files_key: Option<(usize, String)>,
     /// 当前详情页的文件快照（已按过滤词筛选）。
     pub(crate) files: Arc<Vec<SharedString>>,
     /// 文件快照的凭据：`(Catalog 版本, 包名, 过滤词)`。

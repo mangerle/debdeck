@@ -73,6 +73,19 @@ impl DebDeckApp {
                 let texture = image.map(crate::ui::render_image_from_bgra);
                 self.icons.insert_loaded(name, texture);
             }
+            BackendEvent::PackageFilesLoaded {
+                revision,
+                pkg,
+                files,
+            } => {
+                if revision == self.catalog.revision()
+                    && self.list.selected.as_deref() == Some(pkg.as_str())
+                {
+                    self.loaded_files = Some((revision, pkg, files));
+                    self.files_key = None;
+                    self.ensure_files();
+                }
+            }
         }
     }
 

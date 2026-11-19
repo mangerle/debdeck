@@ -109,6 +109,15 @@ pub enum BackendEvent {
         /// 已缩放并转为 BGRA 字节序的位图。
         image: Option<image::RgbaImage>,
     },
+    /// 按需读取的单个已安装软件包文件清单。
+    PackageFilesLoaded {
+        /// 请求时的 Catalog 版本号，用于丢弃过期响应。
+        revision: usize,
+        /// 目标软件包名。
+        pkg: String,
+        /// 文件路径清单。
+        files: Vec<String>,
+    },
 }
 
 /// 把实现标准错误特型的强类型错误链转成展示文本。
