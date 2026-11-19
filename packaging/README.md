@@ -22,6 +22,7 @@ The relevant inputs are:
 | `packaging/49-debdeck.rules` | Narrow polkit rule for `apt-get` / `apt-mark` authorization reuse |
 | `packaging/icons/` | Sized PNG icons installed into the hicolor theme |
 | `assets/logo/debdeck-logo.svg` | Scalable application icon |
+| `cliff.toml` | Categorized GitHub Release notes generated from Conventional Commits |
 
 Do not duplicate dependency lists, install paths or version numbers in a shell
 script. If a field belongs in the package, put it in Cargo metadata.
@@ -98,6 +99,37 @@ sudo apt install ./target/debian/debdeck_*.deb
 debdeck
 ```
 
+## Self-update and release signing
+
+DebDeck uses [`shipup`](https://crates.io/crates/shipup) for Linux `.deb` installer
+self-updates. Clients read `releases/latest/download/latest.json`, verify the
+manifest with an embedded Ed25519 public key, verify the package SHA-256, then run
+`pkexec dpkg -i` for the installation step.
+
+The release workflow requires the `SHIPUP_PRIVATE_KEY` repository secret. Use an
+independent key for DebDeck and keep the private key only on the maintainer machine
+and in GitHub Secrets. Generate the keypair once:
+
+```bash
+shipup-cli keygen -o ~/.config/debdeck/update-signing
+chmod 600 ~/.config/debdeck/update-signing/ed25519.key
+```
+
+Embed the Base64 content of `ed25519.pub` in `UPDATE_PUBLIC_KEY` in
+`src/update.rs`, then store the single-line private key as a GitHub Secret:
+
+```bash
+gh secret set SHIPUP_PRIVATE_KEY < ~/.config/debdeck/update-signing/ed25519.key
+```
+
+Key rotation requires a transition release: older clients only trust the public
+key compiled into their binary and cannot verify a manifest signed by the new
+private key.
+
+The release job uses the `git-cliff --latest` result for both the GitHub Release
+body and the update notes in `latest.json`. Commit messages must therefore follow
+Conventional Commits.
+
 ## CI and release pipeline
 
 [`ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main`, pull requests and
@@ -111,11 +143,14 @@ dependency discovery is performed on the target architecture. Artifacts are name
 ```text
 debdeck_<version>_linux_amd64.deb
 debdeck_<version>_linux_arm64.deb
+latest.json
 SHA256SUMS
 ```
 
 Both workflows call `cargo build` and `cargo deb` directly. A tag is accepted only
-when `vX.Y.Z` matches `[package].version`.
+when `vX.Y.Z` matches `[package].version`. Before publishing, the workflow also
+requires a non-empty `SHIPUP_PRIVATE_KEY` and verifies both `.deb` signatures with
+the public key embedded in the client.
 
 ## Release checklist
 
@@ -124,8 +159,10 @@ when `vX.Y.Z` matches `[package].version`.
 3. Update release-facing documentation if behavior changed.
 4. Run formatting, Clippy, tests and a local `cargo deb --locked --fast --compress-type xz` build.
 5. Commit and push `main`.
-6. Create and push an annotated `vX.Y.Z` tag.
-7. Confirm that the release workflow published both `.deb` files and `SHA256SUMS`.
+6. Confirm that `SHIPUP_PRIVATE_KEY` matches the public key in `src/update.rs`.
+7. Create and push an annotated `vX.Y.Z` tag.
+8. Confirm that the release workflow published both `.deb` files, `latest.json`
+   and `SHA256SUMS`, and that the Release body contains categorized changes.
 
 ## Current limitations
 

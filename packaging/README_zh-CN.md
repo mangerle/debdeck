@@ -21,6 +21,7 @@ DebDeck 只发布一种原生产物：Ubuntu `.deb` 安装包。打包完全由 
 | `packaging/49-debdeck.rules` | 仅覆盖 `apt-get` / `apt-mark` 的窄范围 polkit 规则 |
 | `packaging/icons/` | 安装到 hicolor 主题的多尺寸 PNG 图标 |
 | `assets/logo/debdeck-logo.svg` | 可缩放应用图标 |
+| `cliff.toml` | 按 Conventional Commits 分类生成 GitHub Release 正文 |
 
 不要在 shell 脚本里重复依赖清单、安装路径或版本号。属于安装包的数据应写入
 Cargo 元数据。
@@ -94,6 +95,34 @@ sudo apt install ./target/debian/debdeck_*.deb
 debdeck
 ```
 
+## 自更新与发布密钥
+
+DebDeck 使用 [`shipup`](https://crates.io/crates/shipup) 做 Linux `.deb` 安装器
+自更新。客户端从 `releases/latest/download/latest.json` 读取清单，内置 Ed25519
+公钥验签后再下载更新包，并校验包体 SHA-256；安装阶段通过 `pkexec dpkg -i`
+请求管理员授权。
+
+发布工作流需要仓库 Secret `SHIPUP_PRIVATE_KEY`。私钥必须独立于其他项目，且
+只保存在维护者本机与 GitHub Secret 中。首次生成密钥对：
+
+```bash
+shipup-cli keygen -o ~/.config/debdeck/update-signing
+chmod 600 ~/.config/debdeck/update-signing/ed25519.key
+```
+
+把 `ed25519.pub` 的 Base64 内容写入 `src/update.rs` 的 `UPDATE_PUBLIC_KEY`，再把
+`ed25519.key` 的单行 Base64 内容保存为 GitHub Secret：
+
+```bash
+gh secret set SHIPUP_PRIVATE_KEY < ~/.config/debdeck/update-signing/ed25519.key
+```
+
+密钥轮换必须经过过渡版本：旧客户端只信任编译期内置的旧公钥，不能直接验证
+新私钥签出的清单。
+
+发布任务用 `git-cliff` 的 `--latest` 结果作为 GitHub Release 正文和
+`latest.json` 的更新日志，因此提交信息必须继续遵循 Conventional Commits。
+
 ## CI 与发布流水线
 
 [`ci.yml`](../.github/workflows/ci.yml) 在推送到 `main`、Pull Request 与手动触发时
@@ -107,11 +136,13 @@ debdeck
 ```text
 debdeck_<version>_linux_amd64.deb
 debdeck_<version>_linux_arm64.deb
+latest.json
 SHA256SUMS
 ```
 
 两条工作流都直接调用 `cargo build` 与 `cargo deb`。只有 `vX.Y.Z` 与
-`[package].version` 一致时才会接受该标签。
+`[package].version` 一致时才会接受该标签。发布前还会校验
+`SHIPUP_PRIVATE_KEY` 非空，并用代码内置公钥复验两份 `.deb` 的清单签名。
 
 ## 发布检查清单
 
@@ -120,8 +151,10 @@ SHA256SUMS
 3. 行为变化时同步更新发布相关文档。
 4. 运行格式检查、Clippy、测试与本地 `cargo deb --locked --fast --compress-type xz` 构建。
 5. 提交并推送 `main`。
-6. 创建并推送 annotated `vX.Y.Z` 标签。
-7. 确认发布流水线已上传两个 `.deb` 与 `SHA256SUMS`。
+6. 确认仓库 Secret `SHIPUP_PRIVATE_KEY` 与 `src/update.rs` 内置公钥匹配。
+7. 创建并推送 annotated `vX.Y.Z` 标签。
+8. 确认发布流水线已上传两个 `.deb`、`latest.json` 与 `SHA256SUMS`，且 GitHub
+   Release 正文包含分类后的版本变更。
 
 ## 当前限制
 

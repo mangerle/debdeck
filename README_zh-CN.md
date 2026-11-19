@@ -46,6 +46,8 @@
   授权流程安装；安装前会明确提示维护脚本将以管理员身份执行。
 - **原生渲染与有界任务。** 界面运行在 GPUI 上，软件包扫描与耗时操作由后台任务
   执行，结果通过模态进度页反馈。
+- **内置软件更新。** 标题栏版本入口通过 `shipup` 检查签名更新清单，下载并
+  验签后调用 `.deb` 安装器，重启应用即可加载新版本。
 
 应用内界面目前为简体中文。仓库文档以英文为主，并提供
 [English README](./README.md)。
@@ -71,7 +73,7 @@ sudo apt remove debdeck
 
 依赖：
 
-- Rust **1.95 或更新版本**与 Cargo（edition 2024）
+- Rust **1.96 或更新版本**与 Cargo（edition 2024）
 - 可用的 Ubuntu 桌面会话，以及 Vulkan 或 EGL 图形栈
 - GPUI 所需的原生开发库
 
@@ -120,10 +122,12 @@ target/debian/debdeck_<version>_<architecture>.deb
 | 工作流 | 触发条件 | 用途 |
 | :--- | :--- | :--- |
 | [`ci.yml`](./.github/workflows/ci.yml) | 推送到 `main`、Pull Request、手动触发 | 执行格式检查、Clippy、测试与 release 构建，并上传校验过的 `.deb` 产物 |
-| [`release.yml`](./.github/workflows/release.yml) | 推送 `v*` 标签或手动指定标签 | 构建 amd64 与 arm64 `.deb`，生成 `SHA256SUMS`，并发布 GitHub Release |
+| [`release.yml`](./.github/workflows/release.yml) | 推送 `v*` 标签或手动指定标签 | 生成分类变更日志，构建 amd64 与 arm64 `.deb`，签名 `latest.json` 并发布 GitHub Release |
 
 发布标签必须为 `vX.Y.Z`，并与 `Cargo.toml` 中的 `version` 一致。所有阶段都不执行
-shell 打包脚本；工作流直接调用 `cargo build` 与 `cargo deb`。
+shell 打包脚本；工作流直接调用 `cargo build` 与 `cargo deb`。GitHub Release 正文由
+`git-cliff` 根据 Conventional Commits 生成，不再依赖 GitHub 自动摘要。自更新签名
+密钥与发布步骤见 [`packaging/README_zh-CN.md`](./packaging/README_zh-CN.md)。
 
 ## 工程结构
 
