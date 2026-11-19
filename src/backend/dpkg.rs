@@ -7,7 +7,7 @@
 //! 这里一次性把每包的原始段落缓存进 [`InstalledPackage::control`]，让离线重打包
 //! 不必再全量重读 `status`。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
@@ -47,7 +47,7 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
         BackendError::io("读取 dpkg 状态库", layout.dpkg_status.display(), source)
     })?;
     let info_dir = layout.dpkg_info_dir.canonicalize().ok();
-    let list_files = scan_list_file_names(info_dir.as_deref());
+    let list_files = scan_list_files(info_dir.as_deref());
     let mut try_exec_cache: HashMap<String, bool> = HashMap::with_capacity(128);
     let mut data = InstalledData::default();
     let mut scanned = 0usize;
@@ -63,14 +63,10 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
             return;
         }
         let name = metadata.name.clone();
-        let list_path = locate_list_file(info_dir.as_deref(), &list_files, &name, &metadata.arch);
-        let updated = list_path
-            .as_deref()
-            .and_then(|path| fs::metadata(path).ok())
-            .and_then(|meta| meta.modified().ok());
-        let desktop = list_path
-            .as_deref()
-            .and_then(|path| find_desktop_entry_from_list(&name, path, &mut try_exec_cache));
+        let list_file = locate_list_file(&list_files, &name, &metadata.arch);
+        let updated = list_file.and_then(|file| file.modified);
+        let desktop = list_file
+            .and_then(|file| find_desktop_entry_from_list(&name, &file.path, &mut try_exec_cache));
         data.record(InstalledPackage {
             metadata,
             dpkg,
@@ -83,48 +79,67 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
     Ok(data)
 }
 
-/// 预扫描 `dpkg/info` 目录中的所有 `.list` 文件名，避免逐包执行 `canonicalize` + `is_file`。
-fn scan_list_file_names(info_dir: Option<&Path>) -> HashSet<String> {
+/// 扫描 `dpkg/info` 中可用的 `.list` 文件。
+///
+/// 目录本身已经规范化，条目名来自目录枚举，因此每个候选只需一次
+/// `symlink_metadata`：既能拒绝符号链接和非普通文件，又能顺带取得 mtime，
+/// 不必再在包循环中重复解析路径和读取元数据。
+fn scan_list_files(info_dir: Option<&Path>) -> HashMap<String, ListFile> {
     let Some(dir) = info_dir else {
-        return HashSet::new();
+        return HashMap::new();
     };
     let Ok(entries) = fs::read_dir(dir) else {
-        return HashSet::new();
+        return HashMap::new();
     };
-    let mut names = HashSet::with_capacity(2048);
+    let mut files = HashMap::with_capacity(2048);
     for entry in entries.flatten() {
-        if let Some(name) = entry.file_name().to_str()
-            && name.strip_suffix(".list").is_some()
-        {
-            names.insert(name.to_string());
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name.strip_suffix(".list").is_none() {
+            continue;
         }
+        let owned_name = name.to_string();
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        files.insert(
+            owned_name,
+            ListFile {
+                path,
+                modified: metadata.modified().ok(),
+            },
+        );
     }
-    names
+    files
 }
 
-fn locate_list_file(
-    base: Option<&Path>,
-    list_files: &HashSet<String>,
+/// 已确认安全的 `.list` 文件及其扫描时取得的修改时间。
+struct ListFile {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+}
+
+fn locate_list_file<'a>(
+    list_files: &'a HashMap<String, ListFile>,
     pkg_name: &str,
     arch: &str,
-) -> Option<PathBuf> {
-    let base = base?;
+) -> Option<&'a ListFile> {
     if !safe_info_component(pkg_name) || (!arch.is_empty() && !safe_info_component(arch)) {
         return None;
     }
     let plain_name = format!("{pkg_name}.list");
-    if list_files.contains(&plain_name)
-        && let Some(plain) = checked_info_file(base, &plain_name)
-        && plain.is_file()
-    {
+    if let Some(plain) = list_files.get(&plain_name) {
         return Some(plain);
     }
     if !arch.is_empty() {
         let qualified_name = format!("{pkg_name}:{arch}.list");
-        if list_files.contains(&qualified_name)
-            && let Some(qualified) = checked_info_file(base, &qualified_name)
-            && qualified.is_file()
-        {
+        if let Some(qualified) = list_files.get(&qualified_name) {
             return Some(qualified);
         }
     }
@@ -352,6 +367,7 @@ mod tests {
         assert_eq!(demo.metadata.installed_size_kb, 2048);
         assert_eq!(demo.metadata.depends, "libc6 (>= 2.39), libfoo");
         assert!(demo.dpkg.is_installed());
+        assert!(demo.updated.is_some(), "扫描 .list 时应同时取得 mtime");
         assert!(data.primary("held").unwrap().dpkg.is_held());
         // 文件清单与原始控制段落改为按需读取。
         assert_eq!(
@@ -385,6 +401,31 @@ mod tests {
         assert_eq!(instances.len(), 2);
         assert_eq!(instances[0].metadata.arch.as_ref(), "amd64");
         assert_eq!(instances[1].metadata.arch.as_ref(), "i386");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignores_symlinked_list_files() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("debdeck-dpkg-symlink-{}", std::process::id()));
+        let layout = FsLayout::with_root(&root);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&layout.dpkg_info_dir).unwrap();
+
+        let external = root.join("outside.list");
+        fs::write(&external, "/usr/bin/demo\n").unwrap();
+        symlink(&external, layout.dpkg_info_dir.join("demo.list")).unwrap();
+
+        let info_dir = layout.dpkg_info_dir.canonicalize().unwrap();
+        let files = scan_list_files(Some(&info_dir));
+        assert!(
+            !files.contains_key("demo.list"),
+            "符号链接不能作为 dpkg 清单"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
