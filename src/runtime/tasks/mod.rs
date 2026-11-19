@@ -22,12 +22,13 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use async_channel::{Sender, TrySendError};
 
 use crate::backend::fs_layout::FsLayout;
+use crate::backend::polkit_agent::AuthResponse;
 use crate::backend::self_update::{DownloadedUpdate, UpdateInfo};
 use crate::model::InstalledPackage;
 use crate::runtime::events::{EVENT_QUEUE_CAPACITY, EventReceiver, EventSink, OperationId, Waker};
@@ -148,6 +149,8 @@ struct Worker {
     layout: FsLayout,
     native_arch: Arc<OnceLock<String>>,
     sink: EventSink,
+    stopping: Arc<AtomicBool>,
+    active_privileged: Arc<Mutex<Option<Sender<AuthResponse>>>>,
 }
 
 /// UI 侧唯一的任务入口。
@@ -166,6 +169,8 @@ pub struct TaskManager {
     workers: Vec<JoinHandle<()>>,
     /// 停机标记：事件发送端据此停止重试，避免界面销毁时卡住 worker。
     stopping: Arc<AtomicBool>,
+    /// 当前运行中的提权会话回执通道；停机时关闭它以立即唤醒控制器。
+    active_privileged: Arc<Mutex<Option<Sender<AuthResponse>>>>,
     /// 丢弃本管理器时停止状态监视线程。
     _watcher: Watcher,
 }
@@ -180,10 +185,13 @@ impl TaskManager {
     pub fn start(wake: Waker, layout: FsLayout) -> (Self, EventReceiver) {
         let (event_tx, event_rx) = async_channel::bounded(EVENT_QUEUE_CAPACITY);
         let stopping = Arc::new(AtomicBool::new(false));
+        let active_privileged = Arc::new(Mutex::new(None));
         let worker = Worker {
             layout,
             native_arch: Arc::new(OnceLock::new()),
             sink: EventSink::new(event_tx, wake, Arc::clone(&stopping)),
+            stopping: Arc::clone(&stopping),
+            active_privileged: Arc::clone(&active_privileged),
         };
 
         let (catalog_tx, catalog_rx) = async_channel::bounded(CATALOG_QUEUE_CAPACITY);
@@ -218,6 +226,7 @@ impl TaskManager {
             pending_repository,
             workers,
             stopping,
+            active_privileged,
             _watcher: watcher,
         };
         (manager, event_rx)
@@ -394,9 +403,14 @@ impl TaskManager {
 
 impl Drop for TaskManager {
     fn drop(&mut self) {
-        // 先通知事件发送端停止重试，再关闭任务队列；顺序反了会让 worker
-        // 在退出前继续等待已无人消费的事件。
+        // 先通知事件发送端停止重试并关闭当前提权会话通道，再关闭任务队列；
+        // 否则正在等待密码或子进程退出的 worker 会阻塞主窗口退出。
         self.stopping.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.active_privileged.lock()
+            && let Some(tx) = guard.take()
+        {
+            tx.close();
+        }
         self.catalog_tx.close();
         self.scan_tx.close();
         self.system_tx.close();

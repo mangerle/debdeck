@@ -1,16 +1,16 @@
 //! 后台 worker：数据刷新、系统操作与网络下载。
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use async_channel::Receiver;
+use async_channel::{Receiver, Sender};
 
 use crate::backend::desktop::load_icon_bgra;
 use crate::backend::fs_layout::FsLayout;
-use crate::backend::polkit_agent::{self, InstallEvent};
+use crate::backend::polkit_agent::{self, AuthResponse, InstallEvent};
 use crate::backend::self_update::{
     DownloadedUpdate, UpdateEvent, UpdateInfo, UpdateStage, check_update, confirm_update_success,
 };
@@ -102,6 +102,7 @@ fn run_scan_worker(rx: Receiver<ScanJob>, worker: Worker, pending: Arc<AtomicBoo
         layout,
         native_arch,
         sink,
+        ..
     } = worker;
     while rx.recv_blocking().is_ok() {
         pending.store(false, Ordering::Relaxed);
@@ -116,20 +117,22 @@ fn run_scan_worker(rx: Receiver<ScanJob>, worker: Worker, pending: Arc<AtomicBoo
 
 pub(super) fn spawn_system(rx: Receiver<SystemJob>, worker: Worker) -> JoinHandle<()> {
     thread::spawn(move || {
-        let Worker { layout, sink, .. } = worker;
         while let Ok(job) = rx.recv_blocking() {
-            handle_system_job(job, &layout, &sink);
+            if worker.stopping.load(Ordering::Relaxed) {
+                break;
+            }
+            handle_system_job(job, &worker);
         }
     })
 }
 
-fn handle_system_job(job: SystemJob, layout: &FsLayout, sink: &EventSink) {
+fn handle_system_job(job: SystemJob, worker: &Worker) {
     match job {
-        SystemJob::Uninstall { id, pkg } => handle_uninstall(id, &pkg, sink),
-        SystemJob::Hold { id, pkg, hold } => handle_hold(id, &pkg, hold, sink),
-        SystemJob::AptUpdate { id } => handle_apt_update(id, sink),
-        SystemJob::UpgradeAll { id } => handle_upgrade_all(id, sink),
-        SystemJob::UpgradePackage { id, pkg } => handle_upgrade_package(id, &pkg, sink),
+        SystemJob::Uninstall { id, pkg } => handle_uninstall(id, &pkg, worker),
+        SystemJob::Hold { id, pkg, hold } => handle_hold(id, &pkg, hold, worker),
+        SystemJob::AptUpdate { id } => handle_apt_update(id, worker),
+        SystemJob::UpgradeAll { id } => handle_upgrade_all(id, worker),
+        SystemJob::UpgradePackage { id, pkg } => handle_upgrade_package(id, &pkg, worker),
         SystemJob::Build {
             id,
             package,
@@ -140,8 +143,8 @@ fn handle_system_job(job: SystemJob, layout: &FsLayout, sink: &EventSink) {
             package: &package,
             out_dir: &out_dir,
             cancel: &cancel,
-            layout,
-            sink,
+            layout: &worker.layout,
+            sink: &worker.sink,
         }),
     }
 }
@@ -154,7 +157,7 @@ struct PrivilegedJobSpec {
     refresh: RefreshScope,
 }
 
-fn handle_uninstall(id: OperationId, pkg: &str, sink: &EventSink) {
+fn handle_uninstall(id: OperationId, pkg: &str, worker: &Worker) {
     run_privileged_job(
         PrivilegedJobSpec {
             id,
@@ -163,11 +166,11 @@ fn handle_uninstall(id: OperationId, pkg: &str, sink: &EventSink) {
             notify: Some(("应用已卸载".to_string(), pkg.to_string())),
             refresh: RefreshScope::Installed,
         },
-        sink,
+        worker,
     );
 }
 
-fn handle_hold(id: OperationId, pkg: &str, hold: bool, sink: &EventSink) {
+fn handle_hold(id: OperationId, pkg: &str, hold: bool, worker: &Worker) {
     let success_message = if hold {
         format!("已保持 {pkg} 的当前版本。")
     } else {
@@ -186,11 +189,11 @@ fn handle_hold(id: OperationId, pkg: &str, hold: bool, sink: &EventSink) {
             notify: Some(("版本状态已更新".to_string(), notify_body)),
             refresh: RefreshScope::Installed,
         },
-        sink,
+        worker,
     );
 }
 
-fn handle_apt_update(id: OperationId, sink: &EventSink) {
+fn handle_apt_update(id: OperationId, worker: &Worker) {
     run_privileged_job(
         PrivilegedJobSpec {
             id,
@@ -202,11 +205,11 @@ fn handle_apt_update(id: OperationId, sink: &EventSink) {
             )),
             refresh: RefreshScope::All,
         },
-        sink,
+        worker,
     );
 }
 
-fn handle_upgrade_all(id: OperationId, sink: &EventSink) {
+fn handle_upgrade_all(id: OperationId, worker: &Worker) {
     run_privileged_job(
         PrivilegedJobSpec {
             id,
@@ -218,11 +221,11 @@ fn handle_upgrade_all(id: OperationId, sink: &EventSink) {
             )),
             refresh: RefreshScope::Installed,
         },
-        sink,
+        worker,
     );
 }
 
-fn handle_upgrade_package(id: OperationId, pkg: &str, sink: &EventSink) {
+fn handle_upgrade_package(id: OperationId, pkg: &str, worker: &Worker) {
     run_privileged_job(
         PrivilegedJobSpec {
             id,
@@ -231,12 +234,42 @@ fn handle_upgrade_package(id: OperationId, pkg: &str, sink: &EventSink) {
             notify: Some(("应用已更新".to_string(), pkg.to_string())),
             refresh: RefreshScope::Installed,
         },
-        sink,
+        worker,
     );
 }
 
+struct ActiveSessionGuard<'a> {
+    slot: &'a Mutex<Option<Sender<AuthResponse>>>,
+}
+
+impl<'a> ActiveSessionGuard<'a> {
+    fn register(
+        slot: &'a Mutex<Option<Sender<AuthResponse>>>,
+        stopping: &AtomicBool,
+        tx: &Sender<AuthResponse>,
+    ) -> Self {
+        if let Ok(mut guard) = slot.lock() {
+            *guard = Some(tx.clone());
+        }
+        // 登记后二次检查停机标志，避免与 `TaskManager::drop` 交叉竞态导致通道未被关闭。
+        if stopping.load(Ordering::Relaxed) {
+            tx.close();
+        }
+        Self { slot }
+    }
+}
+
+impl Drop for ActiveSessionGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.slot.lock() {
+            *guard = None;
+        }
+    }
+}
+
 /// 通过内嵌 polkit 认证会话执行提权任务，并将认证提示与输出实时转发为后端事件。
-fn run_privileged_job(spec: PrivilegedJobSpec, sink: &EventSink) {
+fn run_privileged_job(spec: PrivilegedJobSpec, worker: &Worker) {
+    let sink = &worker.sink;
     let PrivilegedJobSpec {
         id,
         args,
@@ -266,6 +299,11 @@ fn run_privileged_job(spec: PrivilegedJobSpec, sink: &EventSink) {
             return;
         }
     };
+    let _guard = ActiveSessionGuard::register(
+        &worker.active_privileged,
+        &worker.stopping,
+        &session.responses,
+    );
 
     let mut throttle = Throttle::new(PROGRESS_INTERVAL);
     while let Ok(event) = session.events.recv_blocking() {
