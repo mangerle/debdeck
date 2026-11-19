@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use async_channel::{Receiver, Sender, TrySendError};
 
+use crate::backend::polkit_agent::{AuthPrompt, AuthResponse};
 use crate::backend::self_update::{DownloadedUpdate, UpdateInfo};
 use crate::model::{InstalledData, RepositoryData};
 
@@ -92,6 +93,16 @@ pub enum BackendEvent {
         id: OperationId,
         message: String,
         progress: Option<(u64, u64)>,
+    },
+    /// 提权操作等待内嵌 polkit 密码/用户输入。
+    OperationAuthPrompt {
+        id: OperationId,
+        prompt: AuthPrompt,
+        responder: async_channel::Sender<AuthResponse>,
+    },
+    /// 管理员授权已通过，命令正在执行。
+    OperationAuthorized {
+        id: OperationId,
     },
     OperationFinished {
         id: OperationId,

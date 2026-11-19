@@ -10,10 +10,11 @@ use async_channel::Receiver;
 
 use crate::backend::desktop::load_icon_bgra;
 use crate::backend::fs_layout::FsLayout;
+use crate::backend::polkit_agent::{self, InstallEvent};
 use crate::backend::self_update::{
     DownloadedUpdate, UpdateEvent, UpdateInfo, UpdateStage, check_update, confirm_update_success,
 };
-use crate::backend::{apt, download, dpkg, privileged, repack, shell};
+use crate::backend::{Result as BackendResult, apt, download, dpkg, privileged, repack, shell};
 use crate::runtime::events::{
     BackendEvent, CatalogUpdate, EventSink, OperationId, RefreshScope, UpgradableReport,
     report_error,
@@ -145,111 +146,170 @@ fn handle_system_job(job: SystemJob, layout: &FsLayout, sink: &EventSink) {
     }
 }
 
+struct PrivilegedJobSpec {
+    id: OperationId,
+    args: BackendResult<Vec<String>>,
+    success_message: String,
+    notify: Option<(String, String)>,
+    refresh: RefreshScope,
+}
+
 fn handle_uninstall(id: OperationId, pkg: &str, sink: &EventSink) {
-    let result = privileged::uninstall_package(pkg)
-        .map(|()| format!("软件包 {pkg} 已卸载。"))
-        .map_err(|error| report_error(&error));
-    if result.is_ok() {
-        shell::notify("应用已卸载", pkg);
-    }
-    sink.send(BackendEvent::OperationFinished {
-        id,
-        refresh: RefreshScope::Installed,
-        result,
-    });
+    run_privileged_job(
+        PrivilegedJobSpec {
+            id,
+            args: privileged::uninstall_args(pkg),
+            success_message: format!("软件包 {pkg} 已卸载。"),
+            notify: Some(("应用已卸载".to_string(), pkg.to_string())),
+            refresh: RefreshScope::Installed,
+        },
+        sink,
+    );
 }
 
 fn handle_hold(id: OperationId, pkg: &str, hold: bool, sink: &EventSink) {
-    let result = privileged::set_hold_state(pkg, hold)
-        .map(|()| {
-            if hold {
-                format!("已保持 {pkg} 的当前版本。")
-            } else {
-                format!("已取消保持 {pkg} 的版本。")
-            }
-        })
-        .map_err(|error| report_error(&error));
-    if result.is_ok() {
-        let body = if hold {
-            format!("{pkg} 已设为保持版本")
-        } else {
-            format!("{pkg} 将重新跟随 APT 升级")
-        };
-        shell::notify("版本状态已更新", &body);
-    }
-    sink.send(BackendEvent::OperationFinished {
-        id,
-        refresh: RefreshScope::Installed,
-        result,
-    });
+    let success_message = if hold {
+        format!("已保持 {pkg} 的当前版本。")
+    } else {
+        format!("已取消保持 {pkg} 的版本。")
+    };
+    let notify_body = if hold {
+        format!("{pkg} 已设为保持版本")
+    } else {
+        format!("{pkg} 将重新跟随 APT 升级")
+    };
+    run_privileged_job(
+        PrivilegedJobSpec {
+            id,
+            args: privileged::hold_args(pkg, hold),
+            success_message,
+            notify: Some(("版本状态已更新".to_string(), notify_body)),
+            refresh: RefreshScope::Installed,
+        },
+        sink,
+    );
 }
 
 fn handle_apt_update(id: OperationId, sink: &EventSink) {
-    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
-    let result = privileged::apt_update(&mut |line| {
-        if throttle.touch() {
-            sink.send(BackendEvent::OperationProgress {
-                id,
-                message: line.to_string(),
-                progress: None,
-            });
-        }
-    })
-    .map(|()| "软件源索引已同步。".to_string())
-    .map_err(|error| report_error(&error));
-    if result.is_ok() {
-        shell::notify("软件源已同步", "APT 软件包索引已更新。");
-    }
-    sink.send(BackendEvent::OperationFinished {
-        id,
-        refresh: RefreshScope::All,
-        result,
-    });
+    run_privileged_job(
+        PrivilegedJobSpec {
+            id,
+            args: Ok(privileged::apt_update_args()),
+            success_message: "软件源索引已同步。".to_string(),
+            notify: Some((
+                "软件源已同步".to_string(),
+                "APT 软件包索引已更新。".to_string(),
+            )),
+            refresh: RefreshScope::All,
+        },
+        sink,
+    );
 }
 
 fn handle_upgrade_all(id: OperationId, sink: &EventSink) {
-    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
-    let result = privileged::upgrade_all(&mut |line| {
-        if throttle.touch() {
-            sink.send(BackendEvent::OperationProgress {
-                id,
-                message: line.to_string(),
-                progress: None,
-            });
-        }
-    })
-    .map(|()| "全部可升级应用已更新完成。".to_string())
-    .map_err(|error| report_error(&error));
-    if result.is_ok() {
-        shell::notify("系统更新完成", "所有可升级软件包已更新。");
-    }
-    sink.send(BackendEvent::OperationFinished {
-        id,
-        refresh: RefreshScope::Installed,
-        result,
-    });
+    run_privileged_job(
+        PrivilegedJobSpec {
+            id,
+            args: Ok(privileged::upgrade_all_args()),
+            success_message: "全部可升级应用已更新完成。".to_string(),
+            notify: Some((
+                "系统更新完成".to_string(),
+                "所有可升级软件包已更新。".to_string(),
+            )),
+            refresh: RefreshScope::Installed,
+        },
+        sink,
+    );
 }
 
 fn handle_upgrade_package(id: OperationId, pkg: &str, sink: &EventSink) {
-    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
-    let result = privileged::upgrade_package(pkg, &mut |line| {
-        if throttle.touch() {
-            sink.send(BackendEvent::OperationProgress {
+    run_privileged_job(
+        PrivilegedJobSpec {
+            id,
+            args: privileged::upgrade_package_args(pkg),
+            success_message: format!("软件包 {pkg} 已更新到最新版本。"),
+            notify: Some(("应用已更新".to_string(), pkg.to_string())),
+            refresh: RefreshScope::Installed,
+        },
+        sink,
+    );
+}
+
+/// 通过内嵌 polkit 认证会话执行提权任务，并将认证提示与输出实时转发为后端事件。
+fn run_privileged_job(spec: PrivilegedJobSpec, sink: &EventSink) {
+    let PrivilegedJobSpec {
+        id,
+        args,
+        success_message,
+        notify,
+        refresh,
+    } = spec;
+    let args = match args {
+        Ok(args) => args,
+        Err(error) => {
+            sink.send(BackendEvent::OperationFinished {
                 id,
-                message: line.to_string(),
-                progress: None,
+                refresh,
+                result: Err(report_error(&error)),
             });
+            return;
         }
-    })
-    .map(|()| format!("软件包 {pkg} 已更新到最新版本。"))
-    .map_err(|error| report_error(&error));
-    if result.is_ok() {
-        shell::notify("应用已更新", pkg);
+    };
+    let session = match polkit_agent::start_privileged(args, success_message, notify) {
+        Ok(session) => session,
+        Err(error) => {
+            sink.send(BackendEvent::OperationFinished {
+                id,
+                refresh,
+                result: Err(report_error(&error)),
+            });
+            return;
+        }
+    };
+
+    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
+    while let Ok(event) = session.events.recv_blocking() {
+        match event {
+            InstallEvent::Notice(message) => {
+                sink.send(BackendEvent::OperationProgress {
+                    id,
+                    message,
+                    progress: None,
+                });
+            }
+            InstallEvent::Prompt(prompt) => {
+                sink.send(BackendEvent::OperationAuthPrompt {
+                    id,
+                    prompt,
+                    responder: session.responses.clone(),
+                });
+            }
+            InstallEvent::Authorized => {
+                sink.send(BackendEvent::OperationAuthorized { id });
+            }
+            InstallEvent::Output(line) => {
+                if throttle.touch() {
+                    sink.send(BackendEvent::OperationProgress {
+                        id,
+                        message: line,
+                        progress: None,
+                    });
+                }
+            }
+            InstallEvent::Finished(result) => {
+                sink.send(BackendEvent::OperationFinished {
+                    id,
+                    refresh,
+                    result,
+                });
+                return;
+            }
+        }
     }
     sink.send(BackendEvent::OperationFinished {
         id,
-        refresh: RefreshScope::Installed,
-        result,
+        refresh,
+        result: Err("提权会话意外中断。".to_string()),
     });
 }
 

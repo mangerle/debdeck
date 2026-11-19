@@ -11,6 +11,7 @@ mod instance;
 mod tasks;
 mod watcher;
 
+pub(crate) use crate::backend::polkit_agent::{AuthPrompt, AuthResponse};
 pub(crate) use crate::backend::self_update::{
     DownloadedUpdate, RecoveryStatus, UpdateInfo, check_and_recover_on_startup,
     restart_current_process,
