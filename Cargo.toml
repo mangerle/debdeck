@@ -10,16 +10,15 @@ documentation = "https://github.com/mangerle/debdeck#readme"
 readme = "README.md"
 keywords = ["apt", "dpkg", "deb", "ubuntu", "gpui"]
 default-run = "debdeck"
-# This is a desktop application distributed through GitHub Releases, not a
-# crates.io library. Refuse accidental publication.
+# 本项目是通过 GitHub Releases 分发的桌面应用，并非 crates.io 库，
+# 因此禁止误发布到 crates.io。
 publish = false
 # 这行不是注释：cargo-deb 与 crates.io 都把它当作 control 的 Description 摘要，
 # 缺省会退化成 "[generated from Rust crate debdeck]"。
-description = "APT/dpkg application manager for Ubuntu"
+description = "Ubuntu 的 APT/dpkg 应用管理器"
 license = "Apache-2.0"
 
 [dependencies]
-anyhow = "1.0.104"
 async-channel = "2.5.0"
 chrono = "0.4.45"
 flate2 = "1.1.10"
@@ -28,11 +27,12 @@ gpui-kit = "0.8.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 lz4_flex = "0.14.0"
 md-5 = "0.11.0"
-nix = { version = "0.30", default-features = false, features = ["user"] }
+nix = { version = "0.30", default-features = false, features = ["signal", "user"] }
 pinyin = { version = "0.11.0", default-features = false, features = ["plain"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls", "system-proxy"] }
 sha2 = "0.11.1"
 smallvec = "1.16.3"
+thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 zbus = "5.19"
@@ -52,13 +52,12 @@ opt-level = 3
 # 本项目不需要 unsafe；用 lint 固化这一边界。
 [lints.rust]
 unsafe_code = "forbid"
+missing_docs = "deny"
 
 # pedantic 作为基线，噪声类规则显式放行，使 `cargo clippy -- -D warnings` 可作门禁。
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 must_use_candidate = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
 doc_markdown = "allow"
 missing_docs_in_private_items = "allow"
 similar_names = "allow"
@@ -89,11 +88,10 @@ changelog = "debian/changelog"
 # 许可证随包一起装到 /usr/share/doc 下，供用户就地查阅
 license-file = "LICENSE"
 extended-description = """
-DebDeck is a native Ubuntu application manager for APT and dpkg packages. It
-combines installed and repository packages in one searchable catalog, supports
-opening and uninstalling applications, holding package versions, downloading
-.deb files, rebuilding packages from installed files, and installing local
-.deb files through a policy-controlled authorization flow."""
+DebDeck 是面向 Ubuntu 的原生 APT/dpkg 应用管理器。它把已安装软件包与软件源中的
+软件包合并到统一的可搜索目录，支持启动与卸载应用、保持软件包版本、下载 .deb
+安装包、从已安装文件重建安装包，以及通过策略控制的管理员授权流程安装本地 .deb
+文件。"""
 assets = [
     ["target/release/debdeck", "usr/bin/debdeck", "755"],
     ["packaging/debdeck.desktop", "usr/share/applications/debdeck.desktop", "644"],

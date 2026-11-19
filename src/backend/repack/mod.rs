@@ -25,12 +25,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use crate::backend::{BackendError, Result};
 
 use crate::backend::fs_layout::FsLayout;
 use crate::model::InstalledPackage;
-use crate::util::{command_exists, sanitize_file_component};
+use crate::util::{command_exists, run_command, sanitize_file_component};
 
 /// 重打包结果。
 #[derive(Clone, Debug)]
@@ -42,60 +43,83 @@ pub struct BuildOutcome {
     pub skipped: usize,
 }
 
-/// 从已安装状态重建 deb 包，产物写入 `out_dir`。
-pub fn build_package(
-    package: &InstalledPackage,
-    layout: &FsLayout,
-    out_dir: &Path,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(&str),
-) -> Result<BuildOutcome> {
+/// 重打包所需的完整输入。
+pub struct BuildOptions<'a> {
+    /// 已安装软件包记录。
+    pub package: &'a InstalledPackage,
+    /// 系统路径布局。
+    pub layout: &'a FsLayout,
+    /// 产物目录。
+    pub out_dir: &'a Path,
+    /// 取消标志。
+    pub cancel: &'a AtomicBool,
+    /// 阶段进度回调。
+    pub progress: &'a mut dyn FnMut(&str),
+}
+
+/// 从已安装状态重建 deb 包，产物写入 `options.out_dir`。
+pub fn build_package(mut options: BuildOptions<'_>) -> Result<BuildOutcome> {
+    let package = options.package;
     if package.files.is_empty() {
-        bail!("没有可用的安装文件列表，无法离线提取安装包");
+        return Err(BackendError::invalid(
+            "离线重建安装包",
+            "没有可用的安装文件列表，无法离线提取安装包",
+        ));
     }
     if !command_exists("dpkg-deb") {
-        bail!("未找到 dpkg-deb，无法构建安装包");
+        return Err(BackendError::missing_program("离线重建安装包", "dpkg-deb"));
     }
 
-    progress("正在准备构建目录…");
+    (options.progress)("正在准备构建目录…");
     let work = temp_work_dir(&package.metadata.name);
     if work.exists() {
         let _ = fs::remove_dir_all(&work);
     }
-    fs::create_dir_all(&work).with_context(|| format!("无法创建构建目录 {}", work.display()))?;
+    fs::create_dir_all(&work)
+        .map_err(|source| BackendError::io("创建构建目录", work.display(), source))?;
 
     // 用闭包 + 立即清理代替 defer，保证任何提前返回都不会留下临时目录。
-    let result = build_in_work_dir(package, layout, out_dir, &work, cancel, progress);
+    let result = build_in_work_dir(&mut options, &work);
     let _ = fs::remove_dir_all(&work);
     result
 }
 
-fn build_in_work_dir(
-    package: &InstalledPackage,
-    layout: &FsLayout,
-    out_dir: &Path,
-    work: &Path,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(&str),
-) -> Result<BuildOutcome> {
-    let copied = files::copy_installed_files(&package.files, work, cancel, progress)?;
+fn build_in_work_dir(options: &mut BuildOptions<'_>, work: &Path) -> Result<BuildOutcome> {
+    let copied = files::copy_installed_files(
+        &options.package.files,
+        work,
+        options.cancel,
+        options.progress,
+    )?;
     if copied.copied_files.is_empty() {
-        bail!("未能复制任何文件，无法构建安装包");
+        return Err(BackendError::invalid(
+            "离线重建安装包",
+            "未能复制任何文件，无法构建安装包",
+        ));
     }
 
     let debian_dir = work.join("DEBIAN");
-    control::write_control(&debian_dir, package, layout, copied.data_bytes, progress)?;
-
-    checksums::write_md5sums(&debian_dir, &copied.copied_files, cancel, progress)?;
-
-    let path = run_dpkg_deb(
-        work,
-        out_dir,
-        cancel,
-        &package.metadata.name,
-        &package.metadata.version,
-        &package.metadata.arch,
+    control::write_control(control::ControlWrite {
+        debian_dir: &debian_dir,
+        package: options.package,
+        layout: options.layout,
+        data_bytes: copied.data_bytes,
+        progress: options.progress,
+    })?;
+    checksums::write_md5sums(
+        &debian_dir,
+        &copied.copied_files,
+        options.cancel,
+        options.progress,
     )?;
+    let path = run_dpkg_deb(&DpkgBuild {
+        work,
+        out_dir: options.out_dir,
+        cancel: options.cancel,
+        name: &options.package.metadata.name,
+        version: &options.package.metadata.version,
+        arch: &options.package.metadata.arch,
+    })?;
     Ok(BuildOutcome {
         path,
         copied: copied.copied_files.len(),
@@ -115,34 +139,50 @@ fn temp_work_dir(pkg_name: &str) -> PathBuf {
     ))
 }
 
+#[derive(Clone, Copy)]
+struct DpkgBuild<'a> {
+    work: &'a Path,
+    out_dir: &'a Path,
+    cancel: &'a AtomicBool,
+    name: &'a str,
+    version: &'a str,
+    arch: &'a str,
+}
+
 /// 调用 `dpkg-deb --build` 生成产物。
-fn run_dpkg_deb(
-    work: &Path,
-    out_dir: &Path,
-    cancel: &AtomicBool,
-    name: &str,
-    version: &str,
-    arch: &str,
-) -> Result<PathBuf> {
+fn run_dpkg_deb(job: &DpkgBuild<'_>) -> Result<PathBuf> {
+    let DpkgBuild {
+        work,
+        out_dir,
+        cancel,
+        name,
+        version,
+        arch,
+    } = job;
     // `dpkg-deb` 是子进程，中途终止会留下半个产物，因此只在启动前检查取消。
     ensure_not_cancelled(cancel)?;
 
     fs::create_dir_all(out_dir)
-        .with_context(|| format!("无法创建输出目录 {}", out_dir.display()))?;
+        .map_err(|source| BackendError::io("创建输出目录", out_dir.display(), source))?;
     let file_name = format!("{name}_{version}_{arch}_repack.deb");
     let output = out_dir.join(sanitize_file_component(&file_name));
     let _ = fs::remove_file(&output);
 
-    let result = Command::new("dpkg-deb")
+    let mut command = Command::new("dpkg-deb");
+    command
         .arg("--root-owner-group")
         .arg("--build")
         .arg(work)
-        .arg(&output)
-        .output()
-        .context("无法执行 dpkg-deb")?;
+        .arg(&output);
+    let result = run_command(&mut command, Duration::from_mins(30))
+        .map_err(|source| BackendError::command("构建安装包", source))?;
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        bail!("dpkg-deb 打包失败：\n{}", stderr.trim());
+        return Err(BackendError::CommandFailed {
+            operation: "构建安装包",
+            code: result.status.code().unwrap_or(-1),
+            detail: stderr.trim().to_string(),
+        });
     }
     Ok(output)
 }
@@ -151,13 +191,15 @@ fn run_dpkg_deb(
 pub(crate) fn set_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        .with_context(|| format!("无法设置 {} 的权限", path.display()))
+        .map_err(|source| BackendError::io("设置文件权限", path.display(), source))
 }
 
 /// 供各阶段使用的取消检查。
 pub(crate) fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        bail!("打包已取消");
+        return Err(BackendError::Cancelled {
+            operation: "构建安装包",
+        });
     }
     Ok(())
 }
@@ -183,8 +225,14 @@ mod tests {
 
         let out_dir = std::env::temp_dir().join(format!("debdeck-repack-{}", std::process::id()));
         let cancel = AtomicBool::new(false);
-        let outcome =
-            build_package(package, &layout, &out_dir, &cancel, &mut |_| {}).expect("重打包应成功");
+        let outcome = build_package(BuildOptions {
+            package,
+            layout: &layout,
+            out_dir: &out_dir,
+            cancel: &cancel,
+            progress: &mut |_| {},
+        })
+        .expect("重打包应成功");
         assert!(outcome.path.is_file());
 
         // dpkg-deb 自己认得的包才算合格产物。

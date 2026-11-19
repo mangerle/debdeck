@@ -6,17 +6,19 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use gpui_kit::component::Theme;
-use gpui_kit::{App, Hsla, SharedString, hsla, px};
+use gpui_kit::{App, Hsla, SharedString, Window, hsla, px};
 
 use crate::app::RowStatus;
+use crate::util::run_command;
 
 /// 启动时配置主题：系统明暗、中文字体与主色。
 ///
 /// 传入窗口是必要的：Linux 上 `window.appearance()` 才可靠，`None` 可能拿到
 /// 默认的浅色外观。
-pub(crate) fn configure(cx: &mut App, window: Option<&mut gpui_kit::Window>) {
+pub(crate) fn configure(cx: &mut App, window: Option<&mut Window>) {
     // 先跟随系统明暗，再覆盖品牌色；顺序反了会被主题重载冲掉。
     Theme::sync_system_appearance(window, cx);
     let (font_family, mono_family) = load_fonts(cx);
@@ -113,10 +115,9 @@ fn default_mono_family() -> Option<String> {
 }
 
 fn family_from_query(pattern: &str) -> Option<String> {
-    let output = Command::new("fc-match")
-        .args(["-f", "%{family}", pattern])
-        .output()
-        .ok()?;
+    let mut command = Command::new("fc-match");
+    command.args(["-f", "%{family}", pattern]);
+    let output = run_command(&mut command, Duration::from_secs(5)).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -124,10 +125,9 @@ fn family_from_query(pattern: &str) -> Option<String> {
 }
 
 fn font_family_from_file(path: &Path) -> Option<String> {
-    let output = Command::new("fc-query")
-        .args(["-f", "%{family}\n", path.to_str()?])
-        .output()
-        .ok()?;
+    let mut command = Command::new("fc-query");
+    command.args(["-f", "%{family}\n", path.to_str()?]);
+    let output = run_command(&mut command, Duration::from_secs(5)).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -160,9 +160,9 @@ pub(crate) fn find_cjk_font() -> Option<(PathBuf, Vec<u8>)> {
     .map(PathBuf::from)
     .collect();
 
-    if let Ok(output) = Command::new("fc-match")
-        .args(["-f", "%{file}", "sans-serif:lang=zh-cn"])
-        .output()
+    let mut command = Command::new("fc-match");
+    command.args(["-f", "%{file}", "sans-serif:lang=zh-cn"]);
+    if let Ok(output) = run_command(&mut command, Duration::from_secs(5))
         && output.status.success()
     {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();

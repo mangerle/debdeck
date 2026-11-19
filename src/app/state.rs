@@ -10,14 +10,15 @@
 //! [`ListView`] 与 [`Catalog::revision`] 共同保证，而不是靠调用点记得置一个布尔位。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 
+use async_channel::Receiver;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::select::{SearchableVec, SelectState};
 use gpui_kit::{Entity, RenderImage, SharedString};
 
-use crate::model::{AppEntry, RepoPackage};
+use crate::model::{AppEntry, DesktopEntry, RepoPackage};
 use crate::runtime::{BackendEvent, CancelToken, OperationId, TaskManager};
 use crate::util::AppPaths;
 
@@ -124,7 +125,10 @@ impl LoadState {
 ///
 /// 同一时刻只有一个模态，`Download` 携带的版本列表规模有限，
 /// 为它单独装箱只会让每个匹配点多一层解包噪声。
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "模态同一时刻只有一个，下载对话框规模有限，装箱只会增加逐帧解包开销"
+)]
 pub(crate) enum ModalState {
     Confirm(Confirm),
     Download(DownloadDialog),
@@ -158,7 +162,7 @@ pub(crate) struct DownloadDialog {
     /// 可选版本，按降序（由 `RepositoryData` 的不变量保证）。
     pub(crate) versions: Vec<RepoPackage>,
     pub(crate) selected: usize,
-    pub(crate) destination_dir: std::path::PathBuf,
+    pub(crate) destination_dir: PathBuf,
 }
 
 impl DownloadDialog {
@@ -169,7 +173,7 @@ impl DownloadDialog {
     }
 
     /// 保存路径。预览与实际下载共用这一处计算，避免两处规则漂移。
-    pub(crate) fn destination(&self) -> Option<std::path::PathBuf> {
+    pub(crate) fn destination(&self) -> Option<PathBuf> {
         let package = self.chosen()?;
         let file_name = crate::util::package_file_name(
             &package.metadata.name,
@@ -188,7 +192,7 @@ pub(crate) struct Operation {
     pub(crate) progress: Option<(u64, u64)>,
     pub(crate) result: Option<Result<String, String>>,
     pub(crate) cancel: Option<CancelToken>,
-    pub(crate) open_dir: Option<std::path::PathBuf>,
+    pub(crate) open_dir: Option<PathBuf>,
     pub(crate) cancel_requested: bool,
 }
 
@@ -206,7 +210,7 @@ impl Operation {
 #[derive(Debug)]
 pub(crate) enum Action {
     Open {
-        desktop: crate::model::DesktopEntry,
+        desktop: DesktopEntry,
         name: String,
     },
     Uninstall {
@@ -231,7 +235,7 @@ pub(crate) enum Action {
     SetMenuVisibility {
         pkg: String,
         name: String,
-        path: std::path::PathBuf,
+        path: PathBuf,
         hidden: bool,
     },
     OpenDownloads,
@@ -273,7 +277,7 @@ impl RowStatus {
         }
     }
 
-    pub(crate) fn of(entry: &crate::model::AppEntry) -> Self {
+    pub(crate) fn of(entry: &AppEntry) -> Self {
         if !entry.is_installed {
             Self::NotInstalled
         } else if entry.is_held {

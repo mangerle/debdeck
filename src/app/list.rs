@@ -5,6 +5,7 @@
 //! 计算凭据：任何一项变了都会重算，调用方不再需要记得「改完状态要把脏标记置位」，
 //! 下标越界的可能也被这个凭据本身挡死。
 
+use std::cmp::Ordering;
 use std::time::UNIX_EPOCH;
 
 use crate::model::AppEntry;
@@ -83,10 +84,12 @@ impl ListView {
         let entries = catalog.entries();
         self.visible = select_visible_entries(
             entries,
-            &self.search,
-            self.filter,
-            self.sort,
-            self.ascending,
+            FilterOptions {
+                search: &self.search,
+                filter: self.filter,
+                sort: self.sort,
+                ascending: self.ascending,
+            },
         );
         self.computed = Some(ComputeKey {
             revision: catalog.revision(),
@@ -124,6 +127,41 @@ impl ListView {
     }
 }
 
+fn entry_matches(entry: &AppEntry, filter: Filter, tokens: &[String]) -> bool {
+    let in_filter = match filter {
+        Filter::All => true,
+        Filter::Installed => entry.is_installed,
+        Filter::Gui => entry.is_gui,
+        Filter::Held => entry.is_held,
+    };
+    in_filter && (tokens.is_empty() || matches_tokens(&entry.search_text, tokens))
+}
+
+fn compare_entries(
+    entries: &[AppEntry],
+    left: usize,
+    right: usize,
+    options: FilterOptions<'_>,
+) -> Ordering {
+    let (left, right) = (&entries[left], &entries[right]);
+    let order = match options.sort {
+        SortKey::Name => left.sort_name.cmp(&right.sort_name),
+        SortKey::Size => left.installed_size_kb.cmp(&right.installed_size_kb),
+        SortKey::Updated => left
+            .updated
+            .unwrap_or(UNIX_EPOCH)
+            .cmp(&right.updated.unwrap_or(UNIX_EPOCH)),
+    };
+    let order = if options.ascending {
+        order
+    } else {
+        order.reverse()
+    };
+    order
+        .then_with(|| left.sort_name.cmp(&right.sort_name))
+        .then_with(|| left.pkg.cmp(&right.pkg))
+}
+
 /// 某个包是否仍在可见行里。
 fn visible_contains(visible: &[usize], entries: &[AppEntry], pkg: &str) -> bool {
     visible
@@ -131,56 +169,37 @@ fn visible_contains(visible: &[usize], entries: &[AppEntry], pkg: &str) -> bool 
         .any(|&index| entries[index].pkg.as_str() == pkg)
 }
 
+/// 列表筛选与排序参数。
+#[derive(Clone, Copy)]
+struct FilterOptions<'a> {
+    search: &'a str,
+    filter: Filter,
+    sort: SortKey,
+    ascending: bool,
+}
+
 /// 按筛选与排序挑选要显示的行下标。
 ///
 /// 搜索与筛选叠加：条目既要落在当前分类里，也要匹配搜索词（无词时只看分类），
 /// 用户选了哪个分类就在哪个分类里搜。
-fn select_visible_entries(
-    entries: &[AppEntry],
-    search: &str,
-    filter: Filter,
-    sort: SortKey,
-    ascending: bool,
-) -> Vec<usize> {
-    let tokens = query_tokens(search);
+fn select_visible_entries(entries: &[AppEntry], options: FilterOptions<'_>) -> Vec<usize> {
+    let tokens = query_tokens(options.search);
     let mut visible: Vec<usize> = entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| {
-            let in_filter = match filter {
-                Filter::All => true,
-                Filter::Installed => entry.is_installed,
-                Filter::Gui => entry.is_gui,
-                Filter::Held => entry.is_held,
-            };
-            in_filter && (tokens.is_empty() || matches_tokens(&entry.search_text, &tokens))
-        })
+        .filter(|(_, entry)| entry_matches(entry, options.filter, &tokens))
         .map(|(index, _)| index)
         .collect();
 
-    visible.sort_by(|&left, &right| {
-        let (left, right) = (&entries[left], &entries[right]);
-        let order = match sort {
-            SortKey::Name => left.sort_name.cmp(&right.sort_name),
-            SortKey::Size => left.installed_size_kb.cmp(&right.installed_size_kb),
-            SortKey::Updated => left
-                .updated
-                .unwrap_or(UNIX_EPOCH)
-                .cmp(&right.updated.unwrap_or(UNIX_EPOCH)),
-        };
-        let order = if ascending { order } else { order.reverse() };
-        // 主键相等时用名字与包名兜底，保证顺序稳定（否则同大小、同时间的包
-        // 每次刷新可能互换位置）。
-        order
-            .then_with(|| left.sort_name.cmp(&right.sort_name))
-            .then_with(|| left.pkg.cmp(&right.pkg))
-    });
+    visible.sort_by(|&left, &right| compare_entries(entries, left, right, options));
     visible
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{DpkgState, InstalledData, InstalledPackage, PackageMetadata};
+    use crate::runtime::CatalogUpdate;
 
     fn entry(pkg: &str, installed: bool, gui: bool, size: u64) -> AppEntry {
         AppEntry {
@@ -201,31 +220,68 @@ mod tests {
     #[test]
     fn filters_and_sorts_entries() {
         let entries = [entry("z", true, false, 10), entry("a", true, true, 20)];
-        let visible = select_visible_entries(&entries, "", Filter::Gui, SortKey::Name, true);
+        let visible = select_visible_entries(
+            &entries,
+            FilterOptions {
+                search: "",
+                filter: Filter::Gui,
+                sort: SortKey::Name,
+                ascending: true,
+            },
+        );
         assert_eq!(visible, vec![1]);
-        let visible = select_visible_entries(&entries, "", Filter::All, SortKey::Size, false);
+        let visible = select_visible_entries(
+            &entries,
+            FilterOptions {
+                search: "",
+                filter: Filter::All,
+                sort: SortKey::Size,
+                ascending: false,
+            },
+        );
         assert_eq!(visible, vec![1, 0]);
         // 搜索与筛选叠加：命中关键词还得落在所选分类里（"z" 不是界面应用）。
-        let visible = select_visible_entries(&entries, "z", Filter::Gui, SortKey::Name, true);
+        let visible = select_visible_entries(
+            &entries,
+            FilterOptions {
+                search: "z",
+                filter: Filter::Gui,
+                sort: SortKey::Name,
+                ascending: true,
+            },
+        );
         assert!(visible.is_empty());
-        let visible = select_visible_entries(&entries, "z", Filter::Installed, SortKey::Name, true);
+        let visible = select_visible_entries(
+            &entries,
+            FilterOptions {
+                search: "z",
+                filter: Filter::Installed,
+                sort: SortKey::Name,
+                ascending: true,
+            },
+        );
         assert_eq!(visible, vec![0]);
     }
 
     #[test]
     fn same_size_entries_keep_a_stable_order() {
         let entries = [entry("bbb", true, true, 10), entry("aaa", true, true, 10)];
-        let visible = select_visible_entries(&entries, "", Filter::Gui, SortKey::Size, true);
+        let visible = select_visible_entries(
+            &entries,
+            FilterOptions {
+                search: "",
+                filter: Filter::Gui,
+                sort: SortKey::Size,
+                ascending: true,
+            },
+        );
         assert_eq!(visible, vec![1, 0], "大小相同时按名称升序");
     }
 
     #[test]
     fn recomputes_only_when_inputs_change() {
         let mut catalog = Catalog::new();
-        catalog.apply(
-            crate::runtime::CatalogUpdate::default()
-                .installed(Ok(crate::model::InstalledData::default())),
-        );
+        catalog.apply(CatalogUpdate::default().installed(Ok(InstalledData::default())));
         let mut list = ListView::new();
         list.filter = Filter::All;
 
@@ -238,18 +294,18 @@ mod tests {
     #[test]
     fn selection_follows_when_filtered_out() {
         let mut catalog = Catalog::new();
-        let mut data = crate::model::InstalledData::default();
+        let mut data = InstalledData::default();
         for name in ["aaa", "bbb"] {
             data.packages.insert(
                 name.to_string(),
-                crate::model::InstalledPackage {
-                    metadata: crate::model::PackageMetadata {
+                InstalledPackage {
+                    metadata: PackageMetadata {
                         name: name.to_string(),
                         version: "1".to_string(),
                         arch: "amd64".to_string(),
                         ..Default::default()
                     },
-                    dpkg: crate::model::DpkgState::parse("install ok installed"),
+                    dpkg: DpkgState::parse("install ok installed"),
                     control: crate::deb822::Stanza::default(),
                     files: vec![],
                     desktop: None,
@@ -257,7 +313,7 @@ mod tests {
                 },
             );
         }
-        catalog.apply(crate::runtime::CatalogUpdate::default().installed(Ok(data)));
+        catalog.apply(CatalogUpdate::default().installed(Ok(data)));
 
         let mut list = ListView::new();
         list.filter = Filter::All;

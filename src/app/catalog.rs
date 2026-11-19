@@ -208,9 +208,7 @@ impl Catalog {
     pub(crate) fn versions(&self, pkg: &str) -> &[RepoPackage] {
         self.repository
             .as_ref()
-            .map_or(&[] as &[crate::model::RepoPackage], |repository| {
-                repository.versions(pkg)
-            })
+            .map_or(&[] as &[RepoPackage], |repository| repository.versions(pkg))
     }
 
     pub(crate) fn installed_version(&self, pkg: &str) -> Option<(String, String)> {
@@ -237,20 +235,21 @@ impl Catalog {
 mod tests {
     use super::*;
     use crate::deb822::Stanza;
+    use crate::model::{DpkgState, PackageMetadata};
 
     fn installed_with(name: &str, version: &str) -> InstalledData {
         let mut data = InstalledData::default();
         data.packages.insert(
             name.to_string(),
             InstalledPackage {
-                metadata: crate::model::PackageMetadata {
+                metadata: PackageMetadata {
                     name: name.to_string(),
                     version: version.to_string(),
                     arch: "amd64".to_string(),
                     summary: "s".to_string(),
                     ..Default::default()
                 },
-                dpkg: crate::model::DpkgState::parse("install ok installed"),
+                dpkg: DpkgState::parse("install ok installed"),
                 control: Stanza::default(),
                 files: vec![],
                 desktop: None,

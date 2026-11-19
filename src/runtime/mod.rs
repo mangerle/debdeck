@@ -10,7 +10,7 @@ mod tasks;
 mod watcher;
 
 pub(crate) use events::{
-    BackendEvent, CatalogUpdate, OperationId, UpgradableReport, Waker, report,
+    BackendEvent, CatalogUpdate, OperationId, UpgradableReport, Waker, report_error,
 };
 pub use instance::InstanceLock;
 pub(crate) use tasks::{CancelToken, DownloadRequest, TaskManager};

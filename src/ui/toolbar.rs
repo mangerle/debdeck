@@ -21,36 +21,7 @@ pub(crate) fn show(
     _window: &mut Window,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let theme = cx.theme();
-    let border = theme.border;
-    let background = theme.background;
-
     let allowed = refresh_allowed(&app.catalog, &app.dialogs);
-
-    // Select 内部是 size_full()，必须由外层容器约束宽度；直接给它 .w()
-    // 会被内部的 size_full 吃掉，表现为排序框扩张、刷新被挤到右侧。
-    let sort_control = div()
-        .w(px(112.0))
-        .flex_shrink_0()
-        .child(Select::new(&app.sort_select).menu_width(px(160.0)));
-
-    // 搜索框拿走大部分剩余空间，但留一个上限，免得宽窗口下拉成一条长条。
-    let search = div()
-        .flex_grow(3.0)
-        .flex_basis(px(200.0))
-        .min_w(px(160.0))
-        .max_w(px(460.0))
-        .child(Input::new(&app.search_input).cleanable(true));
-
-    let refresh = Button::new("refresh")
-        .label("刷新")
-        .compact()
-        .disabled(!allowed)
-        .tooltip("重新读取已安装应用和 APT 软件源（F5）")
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.handle_action(Action::Refresh, cx);
-        }));
-
     h_flex()
         .h(px(52.0))
         .flex_shrink_0()
@@ -58,15 +29,47 @@ pub(crate) fn show(
         .gap(px(10.0))
         .px(px(12.0))
         .border_b_1()
-        .border_color(border)
-        .bg(background)
-        .child(search)
+        .border_color(cx.theme().border)
+        .bg(cx.theme().background)
+        .child(search_control(app))
         .child(filter_group(app.list.filter, cx))
         // 余下的横向空间留在分类与排序之间，两组控件不挤在一起。
         .child(div().flex_grow(1.0))
-        .child(sort_control)
-        .child(refresh)
+        .child(sort_control(app))
+        .child(refresh_button(allowed, cx))
         .into_any_element()
+}
+
+/// 搜索框拿走大部分剩余空间，但留一个上限，免得宽窗口下拉成一条长条。
+fn search_control(app: &DebDeckApp) -> AnyElement {
+    div()
+        .flex_grow(3.0)
+        .flex_basis(px(200.0))
+        .min_w(px(160.0))
+        .max_w(px(460.0))
+        .child(Input::new(&app.search_input).cleanable(true))
+        .into_any_element()
+}
+
+fn sort_control(app: &DebDeckApp) -> AnyElement {
+    // Select 内部是 size_full()，必须由外层容器约束宽度；直接给它 .w()
+    // 会被内部的 size_full 吃掉，表现为排序框扩张、刷新被挤到右侧。
+    div()
+        .w(px(112.0))
+        .flex_shrink_0()
+        .child(Select::new(&app.sort_select).menu_width(px(160.0)))
+        .into_any_element()
+}
+
+fn refresh_button(allowed: bool, cx: &mut Context<DebDeckApp>) -> Button {
+    Button::new("refresh")
+        .label("刷新")
+        .compact()
+        .disabled(!allowed)
+        .tooltip("重新读取已安装应用和 APT 软件源（F5）")
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.handle_action(Action::Refresh, cx);
+        }))
 }
 
 /// 分类切换：分段控件。

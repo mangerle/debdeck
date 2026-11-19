@@ -9,13 +9,13 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::{Context, Result};
+use crate::backend::{BackendError, Result};
 
 use crate::deb822::parse_stanzas;
-use crate::model::{DpkgState, InstalledData, InstalledPackage, PackageMetadata};
+use crate::model::{DesktopEntry, DpkgState, InstalledData, InstalledPackage, PackageMetadata};
 
 use super::desktop::parse_desktop_file;
 use super::fs_layout::FsLayout;
@@ -28,8 +28,9 @@ const PROGRESS_EVERY: usize = 200;
 /// 只有 `Status` 为 `installed` 的包会进入结果；`config-files`、`unpacked` 等
 /// 中间状态不算已安装，因为它们没有完整的文件清单。
 pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Result<InstalledData> {
-    let content = fs::read_to_string(&layout.dpkg_status)
-        .with_context(|| format!("无法读取 {}", layout.dpkg_status.display()))?;
+    let content = fs::read_to_string(&layout.dpkg_status).map_err(|source| {
+        BackendError::io("读取 dpkg 状态库", layout.dpkg_status.display(), source)
+    })?;
 
     let stanzas = parse_stanzas(&content);
     let mut packages: HashMap<String, InstalledPackage> = HashMap::with_capacity(stanzas.len());
@@ -66,19 +67,47 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
 }
 
 /// `info` 目录里某个后缀的文件，优先不限定架构的名字。
+///
+/// 文件名来自 dpkg 状态库，仍按外部数据处理：拒绝任何路径组件，并在命中后
+/// 规范化真实路径，确认它没有因符号链接逃出受控的 `dpkg_info_dir`。
 pub fn info_file(layout: &FsLayout, pkg_name: &str, arch: &str, suffix: &str) -> Option<PathBuf> {
-    let candidate = |name: String| layout.dpkg_info_dir.join(name);
-    let plain = candidate(format!("{pkg_name}.{suffix}"));
-    if plain.is_file() {
+    if !safe_info_component(pkg_name)
+        || !safe_info_component(suffix)
+        || (!arch.is_empty() && !safe_info_component(arch))
+    {
+        return None;
+    }
+
+    let base = layout.dpkg_info_dir.canonicalize().ok()?;
+    let plain_name = format!("{pkg_name}.{suffix}");
+    if let Some(plain) = checked_info_file(&base, &plain_name)
+        && plain.is_file()
+    {
         return Some(plain);
     }
     if !arch.is_empty() {
-        let qualified = candidate(format!("{pkg_name}:{arch}.{suffix}"));
-        if qualified.is_file() {
+        let qualified_name = format!("{pkg_name}:{arch}.{suffix}");
+        if let Some(qualified) = checked_info_file(&base, &qualified_name)
+            && qualified.is_file()
+        {
             return Some(qualified);
         }
     }
     None
+}
+
+/// 只接受单个普通路径组件，阻止 `../` 与绝对路径混入 dpkg info 文件名。
+fn safe_info_component(value: &str) -> bool {
+    !value.is_empty()
+        && Path::new(value)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+/// 规范化候选路径，并确认其真实路径仍位于 dpkg info 目录内。
+fn checked_info_file(base: &Path, name: &str) -> Option<PathBuf> {
+    let path = base.join(name).canonicalize().ok()?;
+    path.starts_with(base).then_some(path)
 }
 
 /// 包内文件清单。缺失 `.list`（异常安装）时返回 `None`，调用方按空清单处理。
@@ -113,7 +142,7 @@ fn is_application_desktop(path: &str, pkg_name: &str) -> bool {
 /// 从文件清单里挑一个桌面条目作为启动入口。
 ///
 /// 多个候选时按路径排序取第一个可解析的，保证同一台机器上结果稳定。
-fn find_desktop_entry(pkg_name: &str, files: &[String]) -> Option<crate::model::DesktopEntry> {
+fn find_desktop_entry(pkg_name: &str, files: &[String]) -> Option<DesktopEntry> {
     let mut candidates: Vec<&String> = files
         .iter()
         .filter(|path| is_application_desktop(path, pkg_name))
@@ -163,6 +192,15 @@ mod tests {
             "/usr/share/man/man1/foo.1.gz",
             "foo"
         ));
+    }
+
+    #[test]
+    fn rejects_info_path_traversal() {
+        let root = std::env::temp_dir().join(format!("debdeck-dpkg-path-{}", std::process::id()));
+        let layout = FsLayout::with_root(&root);
+        fs::create_dir_all(&layout.dpkg_info_dir).unwrap();
+        assert!(info_file(&layout, "../status", "amd64", "list").is_none());
+        assert!(info_file(&layout, "demo", "../../etc", "list").is_none());
     }
 
     #[test]

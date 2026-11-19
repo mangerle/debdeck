@@ -180,7 +180,7 @@ pub enum MenuEntryState {
 
 #[derive(Clone, Debug)]
 pub struct DesktopEntry {
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
     pub name: String,
     pub comment: String,
     pub exec: String,
@@ -265,7 +265,10 @@ impl RepositoryData {
 /// 四个布尔位是视图需要的独立状态（是否安装 / 是否有图形入口 / 是否保持版本 /
 /// 是否有更新），各自单独显示，改成位域或枚举反而更难读，
 /// 因此定点放行 `struct_excessive_bools`。
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "四个布尔值分别描述独立展示属性，组合枚举不能更准确表达状态"
+)]
 #[derive(Clone, Debug)]
 pub struct AppEntry {
     pub pkg: String,
@@ -281,6 +284,7 @@ pub struct AppEntry {
     pub sort_name: String,
 }
 
+/// 合并已安装与软件源数据，生成稳定排序的应用列表。
 pub fn build_entries(
     installed: &InstalledData,
     repository: &RepositoryData,
@@ -289,57 +293,82 @@ pub fn build_entries(
     let mut names = BTreeSet::new();
     names.extend(installed.packages.keys().cloned());
     names.extend(repository.packages.keys().cloned());
-
     let mut entries = Vec::with_capacity(names.len());
     for name in names {
-        let installed_pkg = installed.packages.get(&name);
-        let installed_meta = installed_pkg.map(|pkg| &pkg.metadata);
-        let latest = repository.latest(&name).map(|package| &package.metadata);
-        let desktop = installed_pkg.and_then(|pkg| pkg.desktop.as_ref());
-        let display_name = desktop
-            .map(|desktop| desktop.name.clone())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| name.clone());
-        let summary = desktop
-            .map(|desktop| desktop.comment.clone())
-            .filter(|comment| !comment.is_empty())
-            .or_else(|| {
-                installed_meta
-                    .map(|metadata| metadata.summary.clone())
-                    .filter(|summary| !summary.is_empty())
-            })
-            .or_else(|| latest.map(|metadata| metadata.summary.clone()))
-            .unwrap_or_default();
-        let (search_text, sort_name) = build_search_text(&display_name, &name, &summary);
-        // 更新判定以 `apt list --upgradable` 为权威；集合尚未取回时退回本地版本比较。
-        // 两者语义有差异（apt 不把已保持版本的包算作可升级），因此 upgradable 存在时
-        // 完全忽略回退分支，避免同一个列表里混用两套规则。
-        let has_update = match (installed_meta, latest) {
-            (Some(installed), Some(latest)) => match upgradable {
-                Some(upgradable) => upgradable.contains(&installed.name),
-                None => debian_version_cmp(&latest.version, &installed.version).is_gt(),
-            },
-            _ => false,
-        };
-        let installed_size_kb = installed_meta
-            .map(|metadata| metadata.installed_size_kb)
-            .or_else(|| latest.map(|metadata| metadata.installed_size_kb))
-            .unwrap_or(0);
-        entries.push(AppEntry {
-            pkg: name,
-            display_name,
-            is_installed: installed_pkg.is_some(),
-            is_gui: desktop.is_some(),
-            is_held: installed_pkg.is_some_and(|pkg| pkg.dpkg.is_held()),
-            has_update,
-            installed_size_kb,
-            updated: installed_pkg.and_then(|pkg| pkg.updated),
-            latest_version: latest.map(|metadata| metadata.version.clone()),
-            search_text,
-            sort_name,
-        });
+        entries.push(build_entry(name, installed, repository, upgradable));
     }
     entries
+}
+
+fn build_entry(
+    name: String,
+    installed: &InstalledData,
+    repository: &RepositoryData,
+    upgradable: Option<&HashSet<String>>,
+) -> AppEntry {
+    let installed_pkg = installed.packages.get(&name);
+    let installed_meta = installed_pkg.map(|pkg| &pkg.metadata);
+    let latest = repository.latest(&name).map(|package| &package.metadata);
+    let desktop = installed_pkg.and_then(|pkg| pkg.desktop.as_ref());
+    let display_name = desktop
+        .map(|desktop| desktop.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| name.clone());
+    let summary = entry_summary(desktop, installed_meta, latest);
+    let (search_text, sort_name) = build_search_text(&display_name, &name, &summary);
+    let has_update = has_update(installed_meta, latest, upgradable);
+    let installed_size_kb = installed_meta
+        .map(|metadata| metadata.installed_size_kb)
+        .or_else(|| latest.map(|metadata| metadata.installed_size_kb))
+        .unwrap_or(0);
+    AppEntry {
+        pkg: name,
+        display_name,
+        is_installed: installed_pkg.is_some(),
+        is_gui: desktop.is_some(),
+        is_held: installed_pkg.is_some_and(|pkg| pkg.dpkg.is_held()),
+        has_update,
+        installed_size_kb,
+        updated: installed_pkg.and_then(|pkg| pkg.updated),
+        latest_version: latest.map(|metadata| metadata.version.clone()),
+        search_text,
+        sort_name,
+    }
+}
+
+fn entry_summary(
+    desktop: Option<&DesktopEntry>,
+    installed: Option<&PackageMetadata>,
+    latest: Option<&PackageMetadata>,
+) -> String {
+    desktop
+        .map(|desktop| desktop.comment.clone())
+        .filter(|comment| !comment.is_empty())
+        .or_else(|| {
+            installed
+                .map(|metadata| metadata.summary.clone())
+                .filter(|summary| !summary.is_empty())
+        })
+        .or_else(|| latest.map(|metadata| metadata.summary.clone()))
+        .unwrap_or_default()
+}
+
+/// 更新判定以 `apt list --upgradable` 为权威；集合尚未取回时退回本地版本比较。
+///
+/// 两者语义有差异（apt 不把已保持版本的包算作可升级），因此 upgradable 存在时
+/// 完全忽略回退分支，避免同一个列表里混用两套规则。
+fn has_update(
+    installed: Option<&PackageMetadata>,
+    latest: Option<&PackageMetadata>,
+    upgradable: Option<&HashSet<String>>,
+) -> bool {
+    match (installed, latest) {
+        (Some(installed), Some(latest)) => match upgradable {
+            Some(upgradable) => upgradable.contains(&installed.name),
+            None => debian_version_cmp(&latest.version, &installed.version).is_gt(),
+        },
+        _ => false,
+    }
 }
 
 #[cfg(test)]

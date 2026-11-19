@@ -3,6 +3,8 @@
 //! [`load_repository`] 是本层唯一编排者：它把「索引文件名」与「源 URI」这两个
 //! 独立事实对齐，任何对不齐都要留下用户能看到的警告，而不是静默丢数据。
 
+use std::path::PathBuf;
+
 use crate::backend::fs_layout::FsLayout;
 use crate::model::RepositoryData;
 
@@ -19,8 +21,23 @@ pub use upgradable::list_upgradable;
 pub fn load_repository(layout: &FsLayout, native_arch: &str) -> RepositoryData {
     let (sources, mut warnings) = sources::read_sources(layout, native_arch);
     let mut repository = RepositoryData::default();
-
     let (files, unsupported_suffixes) = index::list_index_files(layout, native_arch);
+    append_discovery_warnings(&files, &unsupported_suffixes, layout, &mut warnings);
+    let scan = scan_indexes(&files, &sources, native_arch, &mut repository);
+    append_scan_warnings(&scan, &mut warnings);
+    if repository.packages.is_empty() && warnings.is_empty() {
+        warnings.push("软件源中没有可用的软件包信息".to_string());
+    }
+    repository.warnings = warnings;
+    repository
+}
+
+fn append_discovery_warnings(
+    files: &[PathBuf],
+    unsupported_suffixes: &[String],
+    layout: &FsLayout,
+    warnings: &mut Vec<String>,
+) {
     if files.is_empty() {
         warnings.push(format!(
             "未找到 APT 软件包索引（{}），请先执行 sudo apt update",
@@ -33,61 +50,72 @@ pub fn load_repository(layout: &FsLayout, native_arch: &str) -> RepositoryData {
             unsupported_suffixes.join("、")
         ));
     }
+}
 
-    let mut guessed = 0_usize;
-    let mut unresolved = 0_usize;
-    let mut read_failures = 0_usize;
+#[derive(Default)]
+struct IndexScan {
+    guessed: usize,
+    unresolved: usize,
+    read_failures: usize,
+}
 
+fn scan_indexes(
+    files: &[PathBuf],
+    sources: &[sources::AptSource],
+    native_arch: &str,
+    repository: &mut RepositoryData,
+) -> IndexScan {
+    let mut scan = IndexScan::default();
     for file in files {
         let Some(file_name) = file.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let base = match index::resolve_repo_base(file_name, &sources, native_arch) {
-            index::BaseResolution::Matched(base) | index::BaseResolution::Prefix(base) => base,
-            index::BaseResolution::Guessed(base) => {
-                guessed += 1;
-                base
-            }
-            index::BaseResolution::Unresolved => {
-                unresolved += 1;
-                continue;
-            }
+        let Some(base) = resolve_base(file_name, sources, native_arch, &mut scan) else {
+            continue;
         };
-
-        match read_index_content(&file) {
-            Some(content) => index::parse_index_into(&mut repository, &content, &base, native_arch),
-            None => read_failures += 1,
+        if let Err(error) = index::parse_index_file_into(repository, file, &base, native_arch) {
+            tracing::warn!("解析索引 {} 失败：{error}", file.display());
+            scan.read_failures = scan.read_failures.saturating_add(1);
         }
     }
-
-    if guessed > 0 {
-        warnings.push(format!(
-            "{guessed} 个索引文件匹配不到已配置的源，已按文件名推断下载地址，可能不准确"
-        ));
-    }
-    if unresolved > 0 {
-        warnings.push(format!(
-            "{unresolved} 个索引文件无法确定软件源地址，其中的软件包不支持在线获取"
-        ));
-    }
-    if read_failures > 0 {
-        warnings.push(format!("{read_failures} 个索引文件读取失败，已跳过"));
-    }
-    if repository.packages.is_empty() && warnings.is_empty() {
-        warnings.push("软件源中没有可用的软件包信息".to_string());
-    }
-
-    repository.warnings = warnings;
-    repository
+    scan
 }
 
-/// 读取索引内容，失败时返回 `None`（由调用方聚合计数并给出警告）。
-fn read_index_content(path: &std::path::Path) -> Option<String> {
-    index::read_index_file(path)
-        .inspect_err(|error| {
-            tracing::warn!("读取索引 {} 失败：{error}", path.display());
-        })
-        .ok()
+fn resolve_base(
+    file_name: &str,
+    sources: &[sources::AptSource],
+    native_arch: &str,
+    scan: &mut IndexScan,
+) -> Option<String> {
+    match index::resolve_repo_base(file_name, sources, native_arch) {
+        index::BaseResolution::Matched(base) | index::BaseResolution::Prefix(base) => Some(base),
+        index::BaseResolution::Guessed(base) => {
+            scan.guessed = scan.guessed.saturating_add(1);
+            Some(base)
+        }
+        index::BaseResolution::Unresolved => {
+            scan.unresolved = scan.unresolved.saturating_add(1);
+            None
+        }
+    }
+}
+
+fn append_scan_warnings(scan: &IndexScan, warnings: &mut Vec<String>) {
+    if scan.guessed > 0 {
+        warnings.push(format!(
+            "{} 个索引文件匹配不到已配置的源，已按文件名推断下载地址，可能不准确",
+            scan.guessed
+        ));
+    }
+    if scan.unresolved > 0 {
+        warnings.push(format!(
+            "{} 个索引文件无法确定软件源地址，其中的软件包不支持在线获取",
+            scan.unresolved
+        ));
+    }
+    if scan.read_failures > 0 {
+        warnings.push(format!("{} 个索引文件读取失败，已跳过", scan.read_failures));
+    }
 }
 
 #[cfg(test)]

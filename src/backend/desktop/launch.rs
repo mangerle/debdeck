@@ -2,7 +2,7 @@
 
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result, bail};
+use crate::backend::{BackendError, Result};
 
 use crate::model::DesktopEntry;
 use crate::util::{command_exists, desktop_exec_args, home_dir};
@@ -14,7 +14,10 @@ use crate::util::{command_exists, desktop_exec_args, home_dir};
 pub fn launch_desktop(entry: &DesktopEntry) -> Result<()> {
     let args = desktop_exec_args(&entry.exec);
     if args.is_empty() {
-        bail!("桌面文件中没有有效的启动命令");
+        return Err(BackendError::invalid(
+            "启动桌面应用",
+            "桌面文件中没有有效的启动命令",
+        ));
     }
 
     let mut command = if entry.terminal {
@@ -31,7 +34,7 @@ pub fn launch_desktop(entry: &DesktopEntry) -> Result<()> {
         .stderr(Stdio::null());
     let mut child = command
         .spawn()
-        .with_context(|| format!("无法启动 {}", args[0]))?;
+        .map_err(|source| BackendError::io("启动桌面应用", format!("命令 {}", args[0]), source))?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });

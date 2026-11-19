@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::backend::dpkg::dpkg_status_mtime;
@@ -26,23 +26,32 @@ const POLL: Duration = Duration::from_secs(2);
 /// 检测到变化后的沉降时间。
 const SETTLE: Duration = Duration::from_millis(600);
 
-/// 一个可停止的状态监视器。句柄被丢弃（[`Drop`]）时线程退出。
+/// 一个可停止的状态监视器。句柄被丢弃（[`Drop`]）时先发停止信号再等待线程结束。
 pub struct Watcher {
     stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl Watcher {
     pub fn start(layout: FsLayout, sink: EventSink) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
-        thread::spawn(move || run(&layout, &sink, &thread_stop));
-        Self { stop }
+        let handle = thread::spawn(move || run(&layout, &sink, &thread_stop));
+        Self {
+            stop,
+            handle: Some(handle),
+        }
     }
 }
 
 impl Drop for Watcher {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take()
+            && handle.join().is_err()
+        {
+            tracing::error!("dpkg 状态监视线程发生 panic，已隔离");
+        }
     }
 }
 
@@ -84,6 +93,7 @@ fn sleep_responsive(stop: &AtomicBool, duration: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
 
     #[test]
     fn stop_flag_ends_sleep() {
@@ -92,16 +102,13 @@ mod tests {
     }
 
     /// 轮询判定：只有「读得到」且「与上次不同」才算变化。
-    fn is_change(
-        last: Option<std::time::SystemTime>,
-        current: Option<std::time::SystemTime>,
-    ) -> bool {
+    fn is_change(last: Option<SystemTime>, current: Option<SystemTime>) -> bool {
         current.is_some() && current != last
     }
 
     #[test]
     fn unreadable_mtime_is_not_an_event() {
-        let now = std::time::SystemTime::now();
+        let now = SystemTime::now();
         assert!(!is_change(Some(now), None));
         assert!(!is_change(Some(now), Some(now)));
         assert!(is_change(Some(now), Some(now + Duration::from_secs(1))));

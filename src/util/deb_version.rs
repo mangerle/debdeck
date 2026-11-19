@@ -46,59 +46,63 @@ fn char_order(byte: u8) -> i32 {
 fn version_part_cmp(left: &str, right: &str) -> Ordering {
     let mut left = left.as_bytes();
     let mut right = right.as_bytes();
-
     loop {
         if left.is_empty() && right.is_empty() {
             return Ordering::Equal;
         }
-
-        // 先消费「非数字块」：两侧各取首个非数字字符比较，空串用 0 填充。
-        while left.first().is_some_and(|b| !b.is_ascii_digit())
-            || right.first().is_some_and(|b| !b.is_ascii_digit())
-        {
-            let l = left
-                .first()
-                .copied()
-                .filter(|b| !b.is_ascii_digit())
-                .unwrap_or(0);
-            let r = right
-                .first()
-                .copied()
-                .filter(|b| !b.is_ascii_digit())
-                .unwrap_or(0);
-            let order = char_order(l).cmp(&char_order(r));
-            if order != Ordering::Equal {
-                return order;
-            }
-            if l != 0 {
-                left = &left[1..];
-            }
-            if r != 0 {
-                right = &right[1..];
-            }
+        if let Some(order) = compare_non_numeric_blocks(&mut left, &mut right) {
+            return order;
         }
-
-        // 再比较「数字块」：去前导 0 后，长度长者大，等长则按字典序（等价数值序）。
         while left.first() == Some(&b'0') {
             left = &left[1..];
         }
         while right.first() == Some(&b'0') {
             right = &right[1..];
         }
-
-        let left_len = left.iter().take_while(|b| b.is_ascii_digit()).count();
-        let right_len = right.iter().take_while(|b| b.is_ascii_digit()).count();
-        match left_len.cmp(&right_len) {
-            Ordering::Equal => {
-                let order = left[..left_len].cmp(&right[..right_len]);
-                if order != Ordering::Equal {
-                    return order;
-                }
-                left = &left[left_len..];
-                right = &right[right_len..];
-            }
-            other => return other,
+        if let Some(order) = compare_numeric_blocks(&mut left, &mut right) {
+            return order;
         }
+    }
+}
+
+fn compare_non_numeric_blocks(left: &mut &[u8], right: &mut &[u8]) -> Option<Ordering> {
+    while left.first().is_some_and(|b| !b.is_ascii_digit())
+        || right.first().is_some_and(|b| !b.is_ascii_digit())
+    {
+        let l = next_non_digit(left.first().copied());
+        let r = next_non_digit(right.first().copied());
+        let order = char_order(l).cmp(&char_order(r));
+        if order != Ordering::Equal {
+            return Some(order);
+        }
+        if l != 0 {
+            *left = &left[1..];
+        }
+        if r != 0 {
+            *right = &right[1..];
+        }
+    }
+    None
+}
+
+fn next_non_digit(byte: Option<u8>) -> u8 {
+    byte.filter(|value| !value.is_ascii_digit()).unwrap_or(0)
+}
+
+fn compare_numeric_blocks(left: &mut &[u8], right: &mut &[u8]) -> Option<Ordering> {
+    let left_len = left.iter().take_while(|b| b.is_ascii_digit()).count();
+    let right_len = right.iter().take_while(|b| b.is_ascii_digit()).count();
+    match left_len.cmp(&right_len) {
+        Ordering::Equal => {
+            let order = left[..left_len].cmp(&right[..right_len]);
+            if order != Ordering::Equal {
+                return Some(order);
+            }
+            *left = &left[left_len..];
+            *right = &right[right_len..];
+            None
+        }
+        other => Some(other),
     }
 }
 

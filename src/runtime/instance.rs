@@ -1,5 +1,6 @@
 use std::env;
 use std::fs::{File, OpenOptions};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use fs2::FileExt;
@@ -23,7 +24,7 @@ impl InstanceLock {
                     Ok(()) => return Ok(Self { _file: file }),
                     // 已经有人持锁就是「另一个实例在运行」。此时不能再试下一个
                     // 候选路径，否则会各自拿到一把锁、开出两个窗口。
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
                         return Err(format!("无法锁定 {}：DebDeck 已经在运行", path.display()));
                     }
                     Err(error) => {
@@ -42,7 +43,7 @@ impl InstanceLock {
 fn lock_paths() -> Vec<PathBuf> {
     let user = env::var("USER").unwrap_or_else(|_| "default".to_string());
     let name = format!("debdeck-{user}.lock");
-    let mut paths = Vec::new();
+    let mut paths = Vec::with_capacity(2);
     if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
         let dir = PathBuf::from(dir);
         if dir.is_absolute() {

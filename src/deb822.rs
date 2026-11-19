@@ -10,7 +10,10 @@
 //!
 //! 本模块刻意不认识「软件包」概念（不出现 Package/Version 之类的字段名），
 //! 因此 `backend` 与 `model` 都可以依赖它而不会形成反向依赖。
-//! 解析新数据源时请复用 [`parse_stanzas`]，不要再手写第二份解析循环。
+//! 小文本使用 [`parse_stanzas`]；大文件使用 [`for_each_stanza`] 逐段消费，
+//! 不要在调用方另写解析循环。
+
+use std::io::{self, BufRead};
 
 /// 一个段落：有序、可重复的字段列表。
 ///
@@ -81,45 +84,104 @@ impl Stanza {
 
 /// 把整份文本解析成段落列表。
 pub fn parse_stanzas(text: &str) -> Vec<Stanza> {
-    let mut stanzas = Vec::new();
-    let mut fields: Vec<(String, String)> = Vec::new();
-    let mut last_value: Option<usize> = None;
-
+    let stanza_capacity = text
+        .lines()
+        .filter(|line| line.trim().is_empty())
+        .count()
+        .saturating_add(1);
+    let mut stanzas = Vec::with_capacity(stanza_capacity);
+    let mut builder = StanzaBuilder::default();
     for raw_line in text.lines() {
-        let line = raw_line.trim_end_matches('\r');
-        if line.is_empty() {
-            if !fields.is_empty() {
-                stanzas.push(Stanza {
-                    fields: std::mem::take(&mut fields),
-                });
-                last_value = None;
-            }
-            continue;
+        builder.push_line(raw_line);
+        if let Some(stanza) = builder.take_on_empty_line(raw_line) {
+            stanzas.push(stanza);
         }
+    }
+    if let Some(stanza) = builder.finish() {
+        stanzas.push(stanza);
+    }
+    stanzas
+}
 
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(index) = last_value {
-                let value = &mut fields[index].1;
+/// 从流中逐段读取 deb822 数据，避免大索引在内存中形成完整字符串副本。
+///
+/// # Errors
+///
+/// 底层读取器返回 I/O 错误时立即中止；已经交给回调的段落不受影响。
+pub fn for_each_stanza(reader: impl BufRead, mut on_stanza: impl FnMut(Stanza)) -> io::Result<()> {
+    let mut builder = StanzaBuilder::default();
+    for line in reader.lines() {
+        let raw_line = line?;
+        builder.push_line(&raw_line);
+        if let Some(stanza) = builder.take_on_empty_line(&raw_line) {
+            on_stanza(stanza);
+        }
+    }
+    if let Some(stanza) = builder.finish() {
+        on_stanza(stanza);
+    }
+    Ok(())
+}
+
+struct StanzaBuilder {
+    fields: Vec<(String, String)>,
+    last_value: Option<usize>,
+}
+
+impl Default for StanzaBuilder {
+    fn default() -> Self {
+        Self {
+            fields: Vec::with_capacity(16),
+            last_value: None,
+        }
+    }
+}
+
+impl StanzaBuilder {
+    fn push_line(&mut self, raw_line: &str) {
+        let line = raw_line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(index) = self.last_value
+                && !line.is_empty()
+            {
+                let value = &mut self.fields[index].1;
                 value.push('\n');
                 value.push_str(line.trim_start());
             }
-            continue;
+            return;
         }
-
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim();
             if name.is_empty() {
-                continue;
+                return;
             }
-            fields.push((name.to_string(), value.trim_start().to_string()));
-            last_value = Some(fields.len() - 1);
+            self.fields
+                .push((name.to_string(), value.trim_start().to_string()));
+            self.last_value = Some(self.fields.len().saturating_sub(1));
         }
     }
 
-    if !fields.is_empty() {
-        stanzas.push(Stanza { fields });
+    fn take_on_empty_line(&mut self, raw_line: &str) -> Option<Stanza> {
+        if raw_line.trim_end_matches('\r').is_empty() {
+            self.take()
+        } else {
+            None
+        }
     }
-    stanzas
+
+    fn take(&mut self) -> Option<Stanza> {
+        if self.fields.is_empty() {
+            return None;
+        }
+        self.last_value = None;
+        Some(Stanza {
+            fields: std::mem::take(&mut self.fields),
+        })
+    }
+
+    fn finish(&mut self) -> Option<Stanza> {
+        self.take()
+    }
 }
 
 /// 按 deb822 规则写出一个字段：首行顶格，续行前置一个空格，空行写成 ` .`。

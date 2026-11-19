@@ -30,10 +30,12 @@ pub mod deb_file;
 pub mod desktop;
 pub mod download;
 pub mod dpkg;
+pub(crate) mod error;
 pub mod fs_layout;
 pub mod polkit_agent;
 pub mod privileged;
 pub mod repack;
 pub mod shell;
 
+pub(crate) use error::{BackendError, Result};
 pub use fs_layout::FsLayout;

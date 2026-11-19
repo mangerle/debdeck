@@ -66,7 +66,7 @@ pub fn parse_desktop_str(content: &str, path: &Path) -> Option<DesktopEntry> {
 /// 解析出 `[Desktop Entry]` 段内的键值对，忽略注释、其他分节与空行。
 fn parse_kv(content: &str) -> HashMap<String, String> {
     let mut in_section = false;
-    let mut values = HashMap::new();
+    let mut values = HashMap::with_capacity(content.lines().count());
     for raw_line in content.lines() {
         let line = raw_line.trim_end_matches('\r');
         let trimmed = line.trim();
@@ -89,7 +89,7 @@ fn parse_kv(content: &str) -> HashMap<String, String> {
 
 /// 当前会话的桌面环境标识，用于 `OnlyShowIn`/`NotShowIn` 匹配。
 fn current_desktops() -> Vec<String> {
-    let mut desktops = Vec::new();
+    let mut desktops = Vec::with_capacity(6);
     for key in [
         "XDG_CURRENT_DESKTOP",
         "XDG_SESSION_DESKTOP",
@@ -153,7 +153,7 @@ fn split_list(value: &str) -> Vec<String> {
 ///
 /// 早期实现硬编码了中文 locale 列表，会让英文会话也拿到中文名。
 fn locale_candidates() -> Vec<String> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(8);
     for key in ["LANGUAGE", "LC_MESSAGES", "LC_ALL", "LANG"] {
         let Ok(value) = env::var(key) else { continue };
         // LANGUAGE 是冒号分隔的优先级列表，其余是单个 locale。

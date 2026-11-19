@@ -8,13 +8,15 @@
 //! 不再维护第二份手写解析循环。
 
 use std::fs::{self, File};
-use std::io::{BufReader, Read};
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use lz4_flex::frame::FrameDecoder;
 
 use crate::backend::fs_layout::FsLayout;
+use crate::deb822::for_each_stanza;
+#[cfg(test)]
 use crate::deb822::parse_stanzas;
 use crate::model::{RepoPackage, RepositoryData};
 
@@ -78,7 +80,7 @@ pub fn list_index_files(layout: &FsLayout, native_arch: &str) -> (Vec<PathBuf>, 
     };
     let mut skipped: Vec<String> = Vec::new();
     let mut all: Vec<PathBuf> = Vec::new();
-    for entry in dir.filter_map(std::io::Result::ok) {
+    for entry in dir.filter_map(io::Result::ok) {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
@@ -109,22 +111,51 @@ pub fn list_index_files(layout: &FsLayout, native_arch: &str) -> (Vec<PathBuf>, 
     (matching, skipped)
 }
 
-/// 读取索引内容（按需解压）。
-pub(super) fn read_index_file(path: &Path) -> std::io::Result<String> {
+/// 流式解析一个索引文件，按需解压并逐段写入仓库数据。
+///
+/// # Errors
+///
+/// 文件无法打开、压缩流损坏或底层读取失败时返回 I/O 错误。
+pub(super) fn parse_index_file_into(
+    repository: &mut RepositoryData,
+    path: &Path,
+    base: &str,
+    native_arch: &str,
+) -> io::Result<()> {
     let file = File::open(path)?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
     let (_, compression) = split_compression(name);
-    let mut buffer = Vec::new();
     match compression {
-        Compression::None => BufReader::new(file).read_to_end(&mut buffer)?,
-        Compression::Gz => GzDecoder::new(file).read_to_end(&mut buffer)?,
-        Compression::Lz4 => FrameDecoder::new(file).read_to_end(&mut buffer)?,
-    };
-    // 索引里可能混入非 UTF-8 字节（损坏或部分写入），用 lossy 解码保证不致命。
-    Ok(String::from_utf8_lossy(&buffer).into_owned())
+        Compression::None => {
+            parse_index_reader(repository, BufReader::new(file), base, native_arch)
+        }
+        Compression::Gz => parse_index_reader(
+            repository,
+            BufReader::new(GzDecoder::new(file)),
+            base,
+            native_arch,
+        ),
+        Compression::Lz4 => parse_index_reader(
+            repository,
+            BufReader::new(FrameDecoder::new(file)),
+            base,
+            native_arch,
+        ),
+    }
+}
+
+fn parse_index_reader(
+    repository: &mut RepositoryData,
+    reader: impl BufRead,
+    base: &str,
+    native_arch: &str,
+) -> io::Result<()> {
+    for_each_stanza(reader, |stanza| {
+        parse_stanza_into(repository, &stanza, base, native_arch);
+    })
 }
 
 /// 把索引文件名映射回源 URI。
@@ -136,21 +167,25 @@ pub fn resolve_repo_base(
     let (stem, _) = split_compression(file_name);
     let arch_suffix = format!("_binary-{native_arch}_Packages");
     let stem = stem.strip_suffix(arch_suffix.as_str()).unwrap_or(stem);
+    if let Some(base) = exact_source_match(stem, sources) {
+        return BaseResolution::Matched(base);
+    }
+    if let Some(base) = longest_prefix_match(stem, sources) {
+        return BaseResolution::Prefix(base);
+    }
+    guess_from_index_name(stem)
+}
 
-    // 1) 精确重建 APT 的命名并比较。
-    for source in sources {
-        let Some(key) = source.uri_key() else {
-            continue;
-        };
+fn exact_source_match(stem: &str, sources: &[AptSource]) -> Option<String> {
+    sources.iter().find_map(|source| {
+        let key = source.uri_key()?;
         let suite = source.suite.replace('/', "_");
         let component = source.component.replace('/', "_");
-        let expected = format!("{key}_dists_{suite}_{component}");
-        if stem == expected {
-            return BaseResolution::Matched(source.uri.clone());
-        }
-    }
+        (stem == format!("{key}_dists_{suite}_{component}")).then(|| source.uri.clone())
+    })
+}
 
-    // 2) 取最长匹配的 URI 前缀，避免多镜像时误配。
+fn longest_prefix_match(stem: &str, sources: &[AptSource]) -> Option<String> {
     let mut best: Option<(String, usize)> = None;
     for source in sources {
         let Some(key) = source.uri_key() else {
@@ -164,12 +199,10 @@ pub fn resolve_repo_base(
             best = Some((source.uri.clone(), key.len()));
         }
     }
-    if let Some((uri, _)) = best {
-        return BaseResolution::Prefix(uri);
-    }
+    best.map(|(uri, _)| uri)
+}
 
-    // 3) 兜底：把 `mirrors.example_ubuntu_dists_…` 里的第一段当成主机路径。
-    //    第三方源与手工放进的索引会走到这里，结果可能不准，因此调用方会警告。
+fn guess_from_index_name(stem: &str) -> BaseResolution {
     let Some((prefix, _)) = stem.split_once("_dists_") else {
         return BaseResolution::Unresolved;
     };
@@ -177,8 +210,6 @@ pub fn resolve_repo_base(
         return BaseResolution::Unresolved;
     }
     let host_path = prefix.replace('_', "/");
-    // 没有点号的名字（如 `localhost`）不是合法主机名，拼出来只会得到一个
-    // 看起来能用、实际下错的 URL，宁可不给下载地址。
     if !host_path.contains('.') {
         return BaseResolution::Unresolved;
     }
@@ -189,6 +220,7 @@ pub fn resolve_repo_base(
 ///
 /// 架构过滤在此完成：只保留本机架构与 `all`。同一（版本, 架构）的重复条目由
 /// [`RepositoryData::record`] 去重。
+#[cfg(test)]
 pub fn parse_index_into(
     repository: &mut RepositoryData,
     content: &str,
@@ -196,16 +228,25 @@ pub fn parse_index_into(
     native_arch: &str,
 ) {
     for stanza in parse_stanzas(content) {
-        let mut package = RepoPackage::from_stanza(&stanza);
-        if package.metadata.name.is_empty() || package.metadata.version.is_empty() {
-            continue;
-        }
-        if package.metadata.arch != native_arch && package.metadata.arch != "all" {
-            continue;
-        }
-        package.repo_base = base.to_string();
-        repository.record(package);
+        parse_stanza_into(repository, &stanza, base, native_arch);
     }
+}
+
+fn parse_stanza_into(
+    repository: &mut RepositoryData,
+    stanza: &crate::deb822::Stanza,
+    base: &str,
+    native_arch: &str,
+) {
+    let mut package = RepoPackage::from_stanza(stanza);
+    if package.metadata.name.is_empty() || package.metadata.version.is_empty() {
+        return;
+    }
+    if package.metadata.arch != native_arch && package.metadata.arch != "all" {
+        return;
+    }
+    package.repo_base = base.to_string();
+    repository.record(package);
 }
 
 #[cfg(test)]
@@ -344,10 +385,13 @@ mod tests {
         {
             let mut encoder =
                 GzEncoder::new(File::create(&path).unwrap(), FlateCompression::default());
-            encoder.write_all(b"Package: demo\nVersion: 1\n\n").unwrap();
+            encoder
+                .write_all(b"Package: demo\nVersion: 1\nArchitecture: amd64\n\n")
+                .unwrap();
         }
-        let content = read_index_file(&path).unwrap();
-        assert!(content.contains("Package: demo"));
+        let mut repository = RepositoryData::default();
+        parse_index_file_into(&mut repository, &path, "https://example.com/", "amd64").unwrap();
+        assert_eq!(repository.latest("demo").unwrap().metadata.version, "1");
         let _ = fs::remove_dir_all(&dir);
     }
 }

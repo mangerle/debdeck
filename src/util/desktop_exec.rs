@@ -36,7 +36,7 @@ fn strip_field_codes(token: &str) -> String {
 
 /// 把 `Exec` 字符串解析成 argv 列表，已去掉字段码与空 token。
 pub fn desktop_exec_args(exec: &str) -> Vec<String> {
-    let mut args = Vec::new();
+    let mut args = Vec::with_capacity(exec.split_whitespace().count().max(1));
     let mut current = String::new();
     let mut quoted: Option<char> = None;
     let mut chars = exec.chars().peekable();

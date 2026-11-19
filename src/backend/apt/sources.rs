@@ -11,9 +11,12 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io;
+use std::iter::Peekable;
 use std::path::Path;
+use std::str::SplitWhitespace;
 
-use crate::deb822::parse_stanzas;
+use crate::deb822::{Stanza, parse_stanzas};
 
 use crate::backend::fs_layout::FsLayout;
 
@@ -100,7 +103,7 @@ pub fn read_sources(layout: &FsLayout, native_arch: &str) -> (Vec<AptSource>, Ve
 
     let mut files: Vec<_> = fs::read_dir(&layout.apt_sources_dir)
         .map(|dir| {
-            dir.filter_map(std::io::Result::ok)
+            dir.filter_map(io::Result::ok)
                 .map(|entry| entry.path())
                 .filter(|path| {
                     path.extension()
@@ -141,61 +144,72 @@ fn parse_sources_line(line: &str, native_arch: &str, collector: &mut Collector) 
     if kind != "deb" {
         return;
     }
-
-    // 方括号里的选项：只关心 arch=，其余（signed-by、trusted 等）与索引解析无关。
-    let mut arches: Vec<String> = Vec::new();
-    if tokens.peek().is_some_and(|token| token.starts_with('[')) {
-        let mut options = String::new();
-        for token in &mut tokens {
-            options.push_str(token);
-            if token.ends_with(']') {
-                break;
-            }
-            options.push(' ');
-        }
-        for option in options
-            .trim()
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .split_whitespace()
-        {
-            if let Some((key, value)) = option.split_once('=')
-                && key.eq_ignore_ascii_case("arch")
-            {
-                arches = value
-                    .split(',')
-                    .map(|arch| arch.trim().to_lowercase())
-                    .collect();
-            }
-        }
-    }
-    if !arches.is_empty()
-        && !arches
-            .iter()
-            .any(|arch| arch == native_arch || arch == "all")
-    {
-        // 该源不提供本机架构，跳过即可，不是异常。
+    let arches = parse_arch_options(&mut tokens);
+    if !supports_native_arch(&arches, native_arch) {
         return;
     }
-
     let Some(uri) = tokens.next() else { return };
     let Some(suite) = tokens.next() else { return };
     if !uri.contains("://") {
         collector.note_unsupported(uri);
         return;
     }
-    let components: Vec<String> = tokens.map(ToString::to_string).collect();
-    let components = if components.is_empty() {
+    let components = components_or_flat(tokens.map(ToString::to_string));
+    insert_plain_source(uri, suite, &components, collector);
+}
+
+fn parse_arch_options(tokens: &mut Peekable<SplitWhitespace<'_>>) -> Vec<String> {
+    if !tokens.peek().is_some_and(|token| token.starts_with('[')) {
+        return Vec::new();
+    }
+    let mut options = String::new();
+    for token in tokens.by_ref() {
+        options.push_str(token);
+        if token.ends_with(']') {
+            break;
+        }
+        options.push(' ');
+    }
+    options
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split_whitespace()
+        .find_map(|option| {
+            let (key, value) = option.split_once('=')?;
+            key.eq_ignore_ascii_case("arch").then(|| {
+                value
+                    .split(',')
+                    .map(|arch| arch.trim().to_lowercase())
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn components_or_flat(components: impl Iterator<Item = String>) -> Vec<String> {
+    let components: Vec<String> = components.collect();
+    if components.is_empty() {
         // flat repository（无 component 段）；APT 用 `/` 占位。
         vec![String::new()]
     } else {
         components
-    };
+    }
+}
+
+fn supports_native_arch(arches: &[String], native_arch: &str) -> bool {
+    arches.is_empty()
+        || arches
+            .iter()
+            .any(|arch| arch == native_arch || arch == "all")
+}
+
+fn insert_plain_source(uri: &str, suite: &str, components: &[String], collector: &mut Collector) {
     for component in components {
         collector.insert(AptSource {
             uri: uri.to_string(),
             suite: suite.to_string(),
-            component,
+            component: component.clone(),
         });
     }
 }
@@ -213,62 +227,67 @@ fn parse_sources_list(content: &str, native_arch: &str, collector: &mut Collecto
 
 fn parse_deb822_sources(content: &str, native_arch: &str, collector: &mut Collector) {
     for stanza in parse_stanzas(content) {
-        if stanza
-            .get("Enabled")
-            .is_some_and(|value| value.eq_ignore_ascii_case("no"))
-        {
-            continue;
+        if let Some(spec) = deb822_source_spec(&stanza, native_arch) {
+            insert_deb822_source(&spec, native_arch, collector);
         }
-        let types: Vec<&str> = stanza
-            .get("Types")
-            .unwrap_or("deb")
-            .split_whitespace()
-            .collect();
-        if !types.contains(&"deb") {
-            continue;
-        }
-        let arches: Vec<String> = stanza
-            .get_joined("Architectures")
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .collect();
-        if !arches.is_empty()
-            && !arches
-                .iter()
-                .any(|arch| arch == native_arch || arch == "all")
-        {
-            continue;
-        }
-        let Some(uris) = stanza.get("URIs") else {
-            continue;
-        };
-        let suites = stanza.get("Suites").unwrap_or_default();
-        let components: Vec<String> = stanza
+    }
+}
+
+struct Deb822SourceSpec {
+    uris: String,
+    suites: String,
+    components: Vec<String>,
+}
+
+fn deb822_source_spec(stanza: &Stanza, native_arch: &str) -> Option<Deb822SourceSpec> {
+    if stanza
+        .get("Enabled")
+        .is_some_and(|value| value.eq_ignore_ascii_case("no"))
+    {
+        return None;
+    }
+    let types = stanza.get("Types").unwrap_or("deb");
+    if !types.split_whitespace().any(|kind| kind == "deb") {
+        return None;
+    }
+    let arches: Vec<String> = stanza
+        .get_joined("Architectures")
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect();
+    if !supports_native_arch(&arches, native_arch) {
+        return None;
+    }
+    let uris = stanza.get("URIs")?.to_string();
+    let suites = stanza.get("Suites").unwrap_or_default().to_string();
+    let components = components_or_flat(
+        stanza
             .get("Components")
             .unwrap_or_default()
             .split_whitespace()
-            .map(ToString::to_string)
-            .collect();
-        let components = if components.is_empty() {
-            vec![String::new()]
-        } else {
-            components
-        };
+            .map(ToString::to_string),
+    );
+    Some(Deb822SourceSpec {
+        uris,
+        suites,
+        components,
+    })
+}
 
-        for uri in uris.split_whitespace() {
-            let uri = uri.replace("${ARCH}", native_arch);
-            if !uri.contains("://") {
-                collector.note_unsupported(&uri);
-                continue;
-            }
-            for suite in suites.split_whitespace() {
-                for component in &components {
-                    collector.insert(AptSource {
-                        uri: uri.clone(),
-                        suite: suite.to_string(),
-                        component: component.clone(),
-                    });
-                }
+fn insert_deb822_source(spec: &Deb822SourceSpec, native_arch: &str, collector: &mut Collector) {
+    for uri in spec.uris.split_whitespace() {
+        let uri = uri.replace("${ARCH}", native_arch);
+        if !uri.contains("://") {
+            collector.note_unsupported(&uri);
+            continue;
+        }
+        for suite in spec.suites.split_whitespace() {
+            for component in &spec.components {
+                collector.insert(AptSource {
+                    uri: uri.clone(),
+                    suite: suite.to_string(),
+                    component: component.clone(),
+                });
             }
         }
     }

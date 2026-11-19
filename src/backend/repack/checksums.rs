@@ -6,10 +6,10 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{Context, Result};
+use crate::backend::{BackendError, Result};
 use md5::{Digest, Md5};
 
 use crate::util::hex_lower;
@@ -19,7 +19,7 @@ use super::{PROGRESS_EVERY, ensure_not_cancelled, set_mode};
 /// 为复制进工作目录的文件写 md5sums。
 pub fn write_md5sums(
     debian_dir: &Path,
-    copied_files: &[(std::path::PathBuf, std::path::PathBuf)],
+    copied_files: &[(PathBuf, PathBuf)],
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&str),
 ) -> Result<()> {
@@ -32,24 +32,27 @@ pub fn write_md5sums(
         if index > 0 && index % PROGRESS_EVERY == 0 {
             progress(&format!("正在生成校验和…已处理 {index} 个"));
         }
-        let digest =
-            md5_of_file(path).with_context(|| format!("无法读取 {} 计算校验和", path.display()))?;
+        let digest = md5_of_file(path)?;
         // Debian 的格式：`<摘要><两个空格><包内相对路径>`。
         lines.push(format!("{digest}  {}", relative.to_string_lossy()));
     }
     lines.sort();
 
     let path = debian_dir.join("md5sums");
-    std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
+    std::fs::write(&path, format!("{}\n", lines.join("\n")))
+        .map_err(|source| BackendError::io("写入 md5sums", path.display(), source))?;
     set_mode(&path, 0o644)
 }
 
 fn md5_of_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
+    let mut file = File::open(path)
+        .map_err(|source| BackendError::io("打开待校验文件", path.display(), source))?;
     let mut hasher = Md5::new();
     let mut buffer = vec![0_u8; 128 * 1024];
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| BackendError::io("读取待校验文件", path.display(), source))?;
         if read == 0 {
             break;
         }
@@ -61,7 +64,6 @@ fn md5_of_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn writes_sorted_md5_lines() {

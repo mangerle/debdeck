@@ -53,6 +53,8 @@ pub(crate) struct InstallApp {
     running: Arc<AtomicBool>,
     password: Entity<InputState>,
     auth_tx: Option<async_channel::Sender<AuthResponse>>,
+    /// 持有后台控制器句柄，窗口关闭或安装结束时等待线程安全收尾。
+    session: Option<InstallSession>,
     note: Option<String>,
     clear_password: bool,
     focus_password: bool,
@@ -88,6 +90,7 @@ impl InstallApp {
             running: Arc::new(AtomicBool::new(false)),
             password,
             auth_tx: None,
+            session: None,
             note: None,
             clear_password: false,
             focus_password: false,
@@ -181,10 +184,9 @@ impl InstallApp {
 
         match polkit_agent::start(&path, name) {
             Ok(session) => {
-                let InstallSession {
-                    events, responses, ..
-                } = session;
-                self.auth_tx = Some(responses);
+                let events = session.events.clone();
+                self.auth_tx = Some(session.responses.clone());
+                self.session = Some(session);
                 cx.spawn(async move |this, cx| {
                     while let Ok(event) = events.recv().await {
                         if this
@@ -226,6 +228,7 @@ impl InstallApp {
             InstallEvent::Finished(result) => {
                 self.phase = Phase::Done(result);
                 self.auth_tx = None;
+                self.session = None;
                 self.running.store(false, Ordering::Relaxed);
             }
         }
@@ -254,6 +257,7 @@ impl InstallApp {
             let _ = tx.try_send(AuthResponse::Cancel);
         }
         self.auth_tx = None;
+        self.session = None;
         self.phase = Phase::Done(Err("已取消安装。".to_string()));
         self.running.store(false, Ordering::Relaxed);
         cx.notify();

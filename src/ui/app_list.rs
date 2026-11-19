@@ -7,6 +7,10 @@
 //! 行不再做斑马纹：靠悬停与选中两档底色区分就够了，圆角内缩的行看起来也更像
 //! 一张张卡片，而不是一张表格。
 
+use std::ops::Range;
+use std::sync::Arc;
+
+use gpui_kit::App;
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::*;
 
@@ -25,60 +29,93 @@ pub(crate) fn show(
     if app.visible.is_empty() {
         return empty_hint(app, cx).into_any_element();
     }
-
-    let entries = app.entries.clone();
-    let visible = app.visible.clone();
-    let selected = app.list.selected.clone();
-    let this = cx.entity();
-
-    let list = uniform_list("app_rows", visible.len(), move |range, _window, cx| {
-        let theme = cx.theme();
-        let row_hover = theme.list_hover;
-        let row_active = theme.list_active;
-        let muted = theme.muted_foreground;
-        let foreground = theme.foreground;
-
-        range
-            .map(|index| {
-                let entry = &entries[visible[index]];
-                let status = RowStatus::of(entry);
-                let badge_color = status_color(theme, status);
-                let is_selected = selected.as_deref() == Some(entry.pkg.as_str());
-                let entity = this.clone();
-                let pkg = entry.pkg.clone();
-
-                let mut element = h_flex()
-                    .id(("app-row", index))
-                    .h(px(ROW_HEIGHT))
-                    .w_full()
-                    .px(px(10.0))
-                    .items_center()
-                    .gap(px(10.0))
-                    .rounded(px(8.0))
-                    .cursor_pointer()
-                    .hover(move |this| this.bg(row_hover))
-                    .on_click(move |_, window, cx| {
-                        entity.update(cx, |app, cx| {
-                            app.select_pkg(Some(pkg.clone()), window, cx);
-                        });
-                    });
-
-                if is_selected {
-                    element = element.bg(row_active);
-                }
-
-                element
-                    .child(status_dot(badge_color))
-                    .child(name_cell(entry, foreground, muted))
-                    .children(badge(status, badge_color))
-                    .into_any_element()
-            })
-            .collect()
-    });
-
     v_flex()
         .size_full()
-        .child(list.flex_1().w_full().px(px(6.0)).py(px(6.0)))
+        .child(app_list(app, cx))
+        .into_any_element()
+}
+
+fn app_list(app: &DebDeckApp, cx: &mut Context<DebDeckApp>) -> AnyElement {
+    let state = AppListRows {
+        entries: app.entries.clone(),
+        visible: app.visible.clone(),
+        selected: app.list.selected.clone(),
+        entity: cx.entity(),
+    };
+    uniform_list(
+        "app_rows",
+        state.visible.len(),
+        move |range, _window, cx| render_app_rows(&state, range, cx),
+    )
+    .flex_1()
+    .w_full()
+    .px(px(6.0))
+    .py(px(6.0))
+    .into_any_element()
+}
+
+struct AppListRows {
+    entries: Arc<Vec<AppEntry>>,
+    visible: Arc<Vec<usize>>,
+    selected: Option<String>,
+    entity: Entity<DebDeckApp>,
+}
+
+fn render_app_rows(state: &AppListRows, range: Range<usize>, cx: &mut App) -> Vec<AnyElement> {
+    let theme = cx.theme();
+    range
+        .map(|index| {
+            let entry = &state.entries[state.visible[index]];
+            app_row(ListRowSpec {
+                entry,
+                index,
+                selected: state.selected.as_deref() == Some(entry.pkg.as_str()),
+                entity: state.entity.clone(),
+                theme,
+            })
+        })
+        .collect()
+}
+
+struct ListRowSpec<'a> {
+    entry: &'a AppEntry,
+    index: usize,
+    selected: bool,
+    entity: Entity<DebDeckApp>,
+    theme: &'a gpui_kit::component::Theme,
+}
+
+fn app_row(spec: ListRowSpec<'_>) -> AnyElement {
+    let status = RowStatus::of(spec.entry);
+    let badge_color = status_color(spec.theme, status);
+    let pkg = spec.entry.pkg.clone();
+    let hover = spec.theme.list_hover;
+    let active = spec.theme.list_active;
+    let mut row = h_flex()
+        .id(("app-row", spec.index))
+        .h(px(ROW_HEIGHT))
+        .w_full()
+        .px(px(10.0))
+        .items_center()
+        .gap(px(10.0))
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .hover(move |this| this.bg(hover))
+        .on_click(move |_, window, cx| {
+            spec.entity.update(cx, |app, cx| {
+                app.select_pkg(Some(pkg.clone()), window, cx);
+            });
+        });
+    if spec.selected {
+        row = row.bg(active);
+    }
+    row.child(status_dot(badge_color))
+        .child(name_cell(
+            spec.entry,
+            spec.theme.foreground,
+            spec.theme.muted_foreground,
+        ))
+        .children(badge(status, badge_color))
         .into_any_element()
 }
 

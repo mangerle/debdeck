@@ -8,12 +8,13 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use crate::backend::{BackendError, Result};
 
 use crate::model::MenuEntryState;
-use crate::util::home_dir;
+use crate::util::{home_dir, run_command};
 
 const MARKER: &str = "X-DebDeck-Hidden=true";
 
@@ -56,26 +57,37 @@ pub fn set_hidden(desktop_path: &Path, hidden: bool) -> Result<MenuEntryState> {
 }
 
 fn set_hidden_in(app_dir: &Path, desktop_path: &Path, hidden: bool) -> Result<MenuEntryState> {
-    let path = override_path_in(app_dir, desktop_path)
-        .context("桌面条目没有文件名，无法生成用户级覆盖文件")?;
+    let path = override_path_in(app_dir, desktop_path).ok_or_else(|| {
+        BackendError::invalid(
+            "生成桌面覆盖文件",
+            "桌面条目没有文件名，无法生成用户级覆盖文件",
+        )
+    })?;
 
     if hidden {
         if path.exists() {
-            let content = fs::read_to_string(&path)
-                .with_context(|| format!("无法读取 {}", path.display()))?;
+            let content = fs::read_to_string(&path).map_err(|source| {
+                BackendError::io("读取用户桌面覆盖文件", path.display(), source)
+            })?;
             if is_owned(&content) {
                 return Ok(MenuEntryState::Hidden);
             }
-            bail!("该应用已有用户自定义的桌面条目，DebDeck 不会覆盖它");
+            return Err(BackendError::invalid(
+                "隐藏应用菜单项",
+                "该应用已有用户自定义的桌面条目，DebDeck 不会覆盖它",
+            ));
         }
 
-        let source = fs::read_to_string(desktop_path)
-            .with_context(|| format!("无法读取 {}", desktop_path.display()))?;
+        let source = fs::read_to_string(desktop_path).map_err(|source| {
+            BackendError::io("读取系统桌面条目", desktop_path.display(), source)
+        })?;
         let content = hidden_override(&source, desktop_path)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("无法创建 {}", parent.display()))?;
+            fs::create_dir_all(parent)
+                .map_err(|source| BackendError::io("创建桌面覆盖目录", parent.display(), source))?;
         }
-        fs::write(&path, content).with_context(|| format!("无法写入 {}", path.display()))?;
+        fs::write(&path, content)
+            .map_err(|source| BackendError::io("写入桌面覆盖文件", path.display(), source))?;
         Ok(MenuEntryState::Hidden)
     } else {
         if !path.exists() {
@@ -83,9 +95,13 @@ fn set_hidden_in(app_dir: &Path, desktop_path: &Path, hidden: bool) -> Result<Me
         }
         let content = fs::read_to_string(&path).unwrap_or_default();
         if !is_owned(&content) {
-            bail!("该应用的桌面条目不是由 DebDeck 隐藏的，未做修改");
+            return Err(BackendError::invalid(
+                "恢复应用菜单项",
+                "该应用的桌面条目不是由 DebDeck 隐藏的，未做修改",
+            ));
         }
-        fs::remove_file(&path).with_context(|| format!("无法删除 {}", path.display()))?;
+        fs::remove_file(&path)
+            .map_err(|source| BackendError::io("删除桌面覆盖文件", path.display(), source))?;
         Ok(MenuEntryState::Visible)
     }
 }
@@ -138,10 +154,13 @@ fn hidden_override(source: &str, desktop_path: &Path) -> Result<String> {
         inserted = true;
     }
     if !saw_main || !inserted {
-        bail!(
-            "桌面条目缺少 [Desktop Entry] 段：{}",
-            desktop_path.display()
-        );
+        return Err(BackendError::invalid(
+            "生成桌面覆盖文件",
+            format!(
+                "桌面条目缺少 [Desktop Entry] 段：{}",
+                desktop_path.display()
+            ),
+        ));
     }
     Ok(out)
 }
@@ -153,14 +172,10 @@ fn hidden_override(source: &str, desktop_path: &Path) -> Result<String> {
 fn refresh_menu() {
     let dir = applications_dir();
     std::thread::spawn(move || {
-        if let Err(error) = Command::new("update-desktop-database")
-            .arg(dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-        {
-            tracing::debug!("update-desktop-database 失败：{error}");
+        let mut command = Command::new("update-desktop-database");
+        command.arg(dir);
+        if let Err(error) = run_command(&mut command, Duration::from_secs(10)) {
+            tracing::debug!("刷新桌面菜单缓存失败：{error}");
         }
     });
 }

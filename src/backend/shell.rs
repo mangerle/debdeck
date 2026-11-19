@@ -5,11 +5,12 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use crate::backend::{BackendError, Result};
 
-use crate::util::APP_ID;
+use crate::util::{APP_ID, run_command};
 
 /// 发送 freedesktop 系统通知。
 ///
@@ -17,23 +18,20 @@ use crate::util::APP_ID;
 /// `notify-send` 缺失（未装 libnotify-bin）时静默忽略，这是 Depends 里的
 /// Recommends 而非硬依赖。
 pub fn notify(summary: &str, body: &str) {
-    let _ = Command::new("notify-send")
-        .arg("-a")
-        .arg(APP_ID)
-        .arg(summary)
-        .arg(body)
-        .spawn();
+    let mut command = Command::new("notify-send");
+    command.arg("-a").arg(APP_ID).arg(summary).arg(body);
+    if let Err(error) = run_command(&mut command, Duration::from_secs(10)) {
+        tracing::debug!("发送系统通知失败：{error}");
+    }
 }
 
 /// 在文件管理器中打开目录（不存在则先创建）。
 pub fn open_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("无法创建目录 {}", path.display()))?;
-    Command::new("xdg-open")
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("无法打开文件管理器（xdg-open）")?;
+    fs::create_dir_all(path)
+        .map_err(|source| BackendError::io("创建下载目录", path.display(), source))?;
+    let mut command = Command::new("xdg-open");
+    command.arg(path);
+    run_command(&mut command, Duration::from_secs(10))
+        .map_err(|source| BackendError::command("打开文件管理器", source))?;
     Ok(())
 }

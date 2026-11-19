@@ -4,28 +4,80 @@
 //!
 //! * **会阻塞的**（卸载、保持版本、重打包、下载）交给 [`crate::runtime::TaskManager`]
 //!   排队，并立刻换成一个进度模态；
-//! * **瞬时完成的**（启动程序、打开目录、复制文本）直接调用后端，不绕线程。
+//! * **瞬时完成的**（启动程序、复制文本）直接调用后端；
+//! * **文件系统或外部进程副作用**（打开目录、修改菜单覆盖文件）提交到 GPUI
+//!   后台执行器，完成后再回到 UI 线程更新提示。
 
 use std::path::{Path, PathBuf};
 
 use gpui_kit::{ClipboardItem, Context};
 
 use crate::app::state::{Action, Confirm, DebDeckApp, DownloadDialog, ModalState, Operation};
+use crate::backend::Result as BackendResult;
 use crate::backend::desktop::launch_desktop;
+use crate::backend::desktop::menu;
 use crate::backend::shell;
-use crate::model::RepoPackage;
-use crate::runtime::{DownloadRequest, report};
+use crate::model::{MenuEntryState, RepoPackage};
+use crate::runtime::{DownloadRequest, report_error};
+
+struct MenuVisibilityChange {
+    pkg: String,
+    name: String,
+    path: PathBuf,
+    hidden: bool,
+}
+
+fn finish_menu_visibility(
+    app: &mut DebDeckApp,
+    change: MenuVisibilityChange,
+    result: BackendResult<MenuEntryState>,
+    cx: &mut Context<DebDeckApp>,
+) {
+    let MenuVisibilityChange {
+        pkg, name, hidden, ..
+    } = change;
+    match result {
+        Ok(state) => {
+            app.catalog.set_desktop_menu_state(&pkg, state);
+            let message = if hidden {
+                format!("已隐藏「{name}」的应用菜单项（菜单刷新可能需要几秒）")
+            } else {
+                format!("已恢复「{name}」的应用菜单项")
+            };
+            app.set_toast(message, cx);
+        }
+        Err(error) => app
+            .dialogs
+            .set_message("无法修改应用菜单项", report_error(&error)),
+    }
+    cx.notify();
+}
+
+fn finish_open_directory(
+    app: &mut DebDeckApp,
+    path: &Path,
+    result: BackendResult<()>,
+    cx: &mut Context<DebDeckApp>,
+) {
+    if let Err(error) = result {
+        app.dialogs
+            .set_message("无法打开目录", format!("{}\n{error}", path.display()));
+    }
+    cx.notify();
+}
 
 impl DebDeckApp {
     pub(crate) fn handle_action(&mut self, action: Action, cx: &mut Context<Self>) {
         match action {
             Action::Open { desktop, name } => match launch_desktop(&desktop) {
                 Ok(()) => self.set_toast(format!("正在打开 {name}"), cx),
-                Err(error) => self.dialogs.set_message("无法打开应用", report(&error)),
+                Err(error) => self
+                    .dialogs
+                    .set_message("无法打开应用", report_error(&error)),
             },
             Action::OpenDownloads => {
                 let path = self.paths.downloads.clone();
-                self.open_directory(&path);
+                Self::open_directory(path, cx);
             }
             Action::Copy(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -49,32 +101,49 @@ impl DebDeckApp {
                 name,
                 path,
                 hidden,
-            } => match crate::backend::desktop::menu::set_hidden(&path, hidden) {
-                Ok(state) => {
-                    self.catalog.set_desktop_menu_state(&pkg, state);
-                    let message = if hidden {
-                        format!("已隐藏「{name}」的应用菜单项（菜单刷新可能需要几秒）")
-                    } else {
-                        format!("已恢复「{name}」的应用菜单项")
-                    };
-                    self.set_toast(message, cx);
-                }
-                Err(error) => self
-                    .dialogs
-                    .set_message("无法修改应用菜单项", report(&error)),
-            },
+            } => Self::set_menu_visibility(
+                MenuVisibilityChange {
+                    pkg,
+                    name,
+                    path,
+                    hidden,
+                },
+                cx,
+            ),
             Action::Download { pkg, name } => self.open_download_dialog(pkg, name),
             Action::Refresh => self.refresh_all(),
         }
         cx.notify();
     }
 
-    /// 在文件管理器里打开目录；失败时给出可操作的提示。
-    pub(crate) fn open_directory(&mut self, path: &Path) {
-        if let Err(error) = shell::open_directory(path) {
-            self.dialogs
-                .set_message("无法打开目录", format!("{}\n{error:#}", path.display()));
-        }
+    fn set_menu_visibility(change: MenuVisibilityChange, cx: &mut Context<Self>) {
+        let path = change.path.clone();
+        let hidden = change.hidden;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { menu::set_hidden(&path, hidden) })
+                .await;
+            _ = this.update(cx, move |app, cx| {
+                finish_menu_visibility(app, change, result, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// 在文件管理器里异步打开目录，完成后在 UI 线程显示错误。
+    pub(crate) fn open_directory(path: PathBuf, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let task_path = path.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { shell::open_directory(&task_path) })
+                .await;
+            _ = this.update(cx, move |app, cx| {
+                finish_open_directory(app, &path, result, cx);
+            });
+        })
+        .detach();
     }
 
     /// 组装下载对话框：只列出真正有下载地址的版本。
@@ -115,7 +184,14 @@ impl DebDeckApp {
     }
 
     pub(crate) fn start_uninstall(&mut self, pkg: String, name: &str) {
-        let id = self.tasks.uninstall(pkg);
+        let id = match self.tasks.uninstall(pkg) {
+            Ok(id) => id,
+            Err(error) => {
+                self.dialogs
+                    .set_message("无法卸载软件包", error.to_string());
+                return;
+            }
+        };
         self.dialogs.begin_operation(Operation {
             id,
             title: format!("卸载 {name}"),
@@ -129,7 +205,14 @@ impl DebDeckApp {
     }
 
     pub(crate) fn start_hold(&mut self, pkg: String, name: &str, hold: bool) {
-        let id = self.tasks.hold(pkg, hold);
+        let id = match self.tasks.hold(pkg, hold) {
+            Ok(id) => id,
+            Err(error) => {
+                self.dialogs
+                    .set_message("无法修改版本状态", error.to_string());
+                return;
+            }
+        };
         let title = if hold {
             format!("保持版本：{name}")
         } else {
@@ -154,7 +237,14 @@ impl DebDeckApp {
             return;
         };
         let out_dir = self.paths.builds.clone();
-        let (id, cancel) = self.tasks.build(package, out_dir.clone());
+        let (id, cancel) = match self.tasks.build(package, out_dir.clone()) {
+            Ok(operation) => operation,
+            Err(error) => {
+                self.dialogs
+                    .set_message("无法提取安装包", error.to_string());
+                return;
+            }
+        };
         self.dialogs.begin_operation(Operation {
             id,
             title: format!("离线提取安装包：{name}"),
@@ -179,16 +269,21 @@ impl DebDeckApp {
                 .set_message("无法下载安装包", "该版本没有可用的下载地址。");
             return;
         };
-        let open_dir = destination.parent().map_or_else(
-            || self.paths.downloads.clone(),
-            std::path::Path::to_path_buf,
-        );
-        let (id, cancel) = self.tasks.download(DownloadRequest {
+        let open_dir = destination
+            .parent()
+            .map_or_else(|| self.paths.downloads.clone(), Path::to_path_buf);
+        let (id, cancel) = match self.tasks.download(DownloadRequest {
             url,
             destination,
             package_name: package.metadata.name.clone(),
             sha256: (!package.sha256.is_empty()).then_some(package.sha256.clone()),
-        });
+        }) {
+            Ok(operation) => operation,
+            Err(error) => {
+                self.dialogs.set_message("无法开始下载", error.to_string());
+                return;
+            }
+        };
         self.dialogs.begin_operation(Operation {
             id,
             title: format!("下载 {name}"),

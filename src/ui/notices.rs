@@ -16,53 +16,12 @@ pub(crate) fn show_loading(
     _window: &mut Window,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
-    let danger = cx.theme().danger;
     let load = app.catalog.load();
-
     let body = if let Some(error) = load.error() {
-        v_flex()
-            .max_w(px(680.0))
-            .items_center()
-            .gap(px(10.0))
-            .child(
-                div()
-                    .text_base()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(danger)
-                    .child("无法读取软件包数据"),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .whitespace_normal()
-                    .child(error.to_string()),
-            )
-            .child(
-                Button::new("retry-load")
-                    .label("重试")
-                    .primary()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.retry_initial_load();
-                        cx.notify();
-                    })),
-            )
-            .into_any_element()
+        loading_failure(error, cx)
     } else {
-        v_flex()
-            .items_center()
-            .gap(px(10.0))
-            .child(Spinner::new().large())
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(load.stage().to_string()),
-            )
-            .into_any_element()
+        loading_progress(load.stage(), cx)
     };
-
     v_flex()
         .size_full()
         .items_center()
@@ -75,6 +34,49 @@ pub(crate) fn show_loading(
                 .child(APP_NAME),
         )
         .child(body)
+        .into_any_element()
+}
+
+fn loading_failure(error: &str, cx: &mut Context<DebDeckApp>) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+    v_flex()
+        .max_w(px(680.0))
+        .items_center()
+        .gap(px(10.0))
+        .child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(danger)
+                .child("无法读取软件包数据"),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(muted)
+                .whitespace_normal()
+                .child(error.to_string()),
+        )
+        .child(
+            Button::new("retry-load")
+                .label("重试")
+                .primary()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.retry_initial_load();
+                    cx.notify();
+                })),
+        )
+        .into_any_element()
+}
+
+fn loading_progress(stage: &str, cx: &Context<DebDeckApp>) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    v_flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(Spinner::new().large())
+        .child(div().text_sm().text_color(muted).child(stage.to_string()))
         .into_any_element()
 }
 

@@ -45,22 +45,27 @@ fn running(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
         card = card.child(progress_block(received, total, cx));
     }
 
-    let cancel = operation.cancel.as_ref().map(|_| {
-        Button::new("cancel-operation")
-            .label("取消")
-            .ghost()
-            .disabled(operation.cancel_requested)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.dialogs.request_cancel();
-                cx.notify();
-            }))
-            .into_any_element()
-    });
+    let cancel = operation
+        .cancel
+        .as_ref()
+        .map(|_| cancel_button(operation, cx));
     if operation.cancel_requested {
         card = card.child(div().text_xs().text_color(muted).child("正在取消，请稍候…"));
     }
 
     card.child(actions().children(cancel)).into_any_element()
+}
+
+fn cancel_button(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
+    Button::new("cancel-operation")
+        .label("取消")
+        .ghost()
+        .disabled(operation.cancel_requested)
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.dialogs.request_cancel();
+            cx.notify();
+        }))
+        .into_any_element()
 }
 
 fn progress_block(received: u64, total: u64, cx: &Context<DebDeckApp>) -> AnyElement {
@@ -101,8 +106,8 @@ fn success(operation: &Operation, message: &str, cx: &mut Context<DebDeckApp>) -
         Button::new("open-operation-dir")
             .label("打开目录")
             .secondary()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.open_directory(&path);
+            .on_click(cx.listener(move |_this, _, _, cx| {
+                DebDeckApp::open_directory(path.clone(), cx);
                 cx.notify();
             }))
             .into_any_element()
@@ -167,7 +172,11 @@ fn failure(operation: &Operation, error: &str, cx: &mut Context<DebDeckApp>) -> 
 }
 
 /// 进度百分比。仅用于绘制：字节数远小于 2^53，`f64 → f32` 的截断不可见。
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "进度值仅用于图形绘制，调用方已保证总量非零且数值远小于 2^53"
+)]
 fn progress_percent(received: u64, total: u64) -> f32 {
     (received.min(total) as f64 / total as f64 * 100.0) as f32
 }

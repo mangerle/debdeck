@@ -5,6 +5,8 @@
 //! 结构：[`FsLayout::system`] 用于生产，[`FsLayout::with_root`] 指向一个
 //! 镜像了相同相对结构的 fixture 目录。
 
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 
 /// 后端读取到的系统数据位置。
@@ -39,7 +41,7 @@ impl FsLayout {
     /// fixture 只需按 `/var/lib/dpkg/…`、`/var/lib/apt/lists`、`/etc/apt/…`
     /// 的相对结构摆放文件即可。
     #[cfg(test)]
-    pub fn with_root(root: &std::path::Path) -> Self {
+    pub fn with_root(root: &Path) -> Self {
         Self {
             dpkg_status: root.join("var/lib/dpkg/status"),
             dpkg_info_dir: root.join("var/lib/dpkg/info"),

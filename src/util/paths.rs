@@ -3,6 +3,9 @@
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
+
+use super::process::run_command;
 
 /// 用户可见的输出目录。全部落在下载目录下，便于用户在文件管理器里直接找到产物。
 #[derive(Clone, Debug)]
@@ -30,7 +33,9 @@ impl Default for AppPaths {
 /// 优先询问 `xdg-user-dir DOWNLOAD`；`xdg-user-dirs` 未安装或返回 `$HOME`
 /// （即用户没有配置下载目录）时回落到 `~/Downloads`。
 fn default_download_dir() -> PathBuf {
-    if let Ok(output) = Command::new("xdg-user-dir").arg("DOWNLOAD").output()
+    let mut command = Command::new("xdg-user-dir");
+    command.arg("DOWNLOAD");
+    if let Ok(output) = run_command(&mut command, Duration::from_secs(5))
         && output.status.success()
     {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();

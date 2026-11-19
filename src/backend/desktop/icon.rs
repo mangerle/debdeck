@@ -58,7 +58,7 @@ fn is_png(path: &Path) -> bool {
 /// 图标搜索根目录：`$XDG_DATA_HOME`（默认 `~/.local/share`）优先，
 /// 然后是 `$XDG_DATA_DIRS`（默认 `/usr/local/share:/usr/share`）。
 fn data_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+    let mut dirs = Vec::with_capacity(3);
     match env::var_os("XDG_DATA_HOME") {
         Some(value) if !value.is_empty() => dirs.push(PathBuf::from(value)),
         _ => dirs.push(home_dir().join(".local/share")),

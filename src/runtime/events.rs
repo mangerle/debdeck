@@ -3,13 +3,20 @@
 //! # 约定
 //!
 //! * 事件是**单向**的：线程只发送，`app` 在下一帧统一接收，绝不反向调用。
-//! * 事件里携带 `String` 而不是 `anyhow::Error`，因为 `Error` 不是 `Clone`/`Send`
-//!   友好的跨线程数据；展示用的文本在发送前用 [`crate::runtime::events::report`]
-//!   格式化一次。
+//! * 事件里携带 `String` 而不是错误对象，因为跨线程消息需要轻量且可克隆的
+//!   展示文本；强类型错误在发送前通过 [`crate::runtime::events::report_error`]
+//!   展开错误链。
 //! * 数据类事件合并成一个 [`BackendEvent::CatalogUpdated`]：一次刷新可能同时带来
 //!   已安装数据、软件源数据与可升级集合，分成三个事件会让 `app` 重建三次列表。
 
 use std::collections::HashSet;
+use std::error::Error;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
+use async_channel::{Receiver, Sender, TrySendError};
 
 use crate::model::{InstalledData, RepositoryData};
 
@@ -83,36 +90,68 @@ pub enum BackendEvent {
     },
 }
 
-/// 事件发送端：把 `anyhow::Error` 转成展示文本。
-pub fn report(error: &anyhow::Error) -> String {
-    // `{:#}` 会拼上整个 context 链，正是排查需要的信息量。
-    format!("{error:#}")
+/// 把实现标准错误特型的强类型错误链转成展示文本。
+pub fn report_error(error: &(impl Error + ?Sized)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(current) = source {
+        text.push('：');
+        text.push_str(&current.to_string());
+        source = current.source();
+    }
+    text
 }
 
 /// 可跨线程调用的唤醒函数，用于请求 GPUI 在下一帧处理事件。
-pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
+
+/// 事件接收端。容量由任务管理器创建时统一设定。
+pub(crate) type EventReceiver = Receiver<BackendEvent>;
+
+/// 事件队列容量。界面每帧最多消费 64 条，256 条可覆盖短暂绘制停顿；
+/// 队列满时 worker 会主动让出时间片，形成有界背压而不是无限积压内存。
+pub(crate) const EVENT_QUEUE_CAPACITY: usize = 256;
+
+/// 事件队列满时的重试间隔。
+const EVENT_RETRY_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Clone)]
 pub struct EventSink {
-    tx: std::sync::mpsc::Sender<BackendEvent>,
+    tx: Sender<BackendEvent>,
     wake: Waker,
+    stopping: Arc<AtomicBool>,
 }
 
 impl EventSink {
-    pub fn new(tx: std::sync::mpsc::Sender<BackendEvent>, wake: Waker) -> Self {
-        Self { tx, wake }
+    pub fn new(tx: Sender<BackendEvent>, wake: Waker, stopping: Arc<AtomicBool>) -> Self {
+        Self { tx, wake, stopping }
     }
 
+    /// 发送事件；队列满时在后台线程内短暂退避，停机时立即放弃。
     pub fn send(&self, event: BackendEvent) {
-        // 接收端已丢弃（窗口关闭）时静默忽略：线程会随进程退出。
-        let _ = self.tx.send(event);
-        (self.wake)();
+        let mut event = event;
+        while !self.stopping.load(Ordering::Relaxed) {
+            match self.tx.try_send(event) {
+                Ok(()) => {
+                    (self.wake)();
+                    return;
+                }
+                Err(TrySendError::Full(returned)) => {
+                    // 先唤醒界面消费积压事件，再短暂退避，避免空转。
+                    (self.wake)();
+                    event = returned;
+                    thread::sleep(EVENT_RETRY_INTERVAL);
+                }
+                Err(TrySendError::Closed(_)) => return,
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     #[test]
     fn builders_set_only_their_own_field() {
@@ -125,10 +164,26 @@ mod tests {
     }
 
     #[test]
-    fn report_keeps_context_chain() {
-        let error = anyhow::anyhow!("底层原因")
-            .context("读取索引失败")
-            .context("解析软件源失败");
-        assert_eq!(report(&error), "解析软件源失败: 读取索引失败: 底层原因");
+    fn stopped_sink_does_not_block_or_queue_events() {
+        let (tx, rx) = async_channel::bounded(1);
+        let stopping = Arc::new(AtomicBool::new(true));
+        let sink = EventSink::new(tx, Arc::new(|| {}), stopping);
+        sink.send(BackendEvent::Stage("不应入队".to_string()));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("解析软件源失败")]
+    struct OuterError {
+        #[source]
+        source: io::Error,
+    }
+
+    #[test]
+    fn report_keeps_source_chain() {
+        let error = OuterError {
+            source: io::Error::other("读取索引失败"),
+        };
+        assert_eq!(report_error(&error), "解析软件源失败：读取索引失败");
     }
 }

@@ -11,7 +11,10 @@ use chrono::{DateTime, Local};
 ///
 /// 这里的 `u64 as f64` 转换只用于显示，第 16 位之后的精度损失不可见，
 /// 因此定点放行 `cast_precision_loss` 而不是引入十进制库。
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "u64 转 f64 仅用于人类可读展示，显示精度损失可以接受"
+)]
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if bytes < 1024 {

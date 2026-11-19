@@ -9,6 +9,7 @@
 //! 如果正有一个操作在跑，原先的实现直接忽略这次通知，列表会一直停留在旧数据上，
 //! 直到下一次文件变化。现在改为「记下来，操作结束补一次刷新」。
 
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use super::state::{ModalState, Operation};
@@ -85,7 +86,7 @@ impl Dialogs {
         if let Some(ModalState::Operation(operation)) = &mut self.modal
             && let Some(token) = &operation.cancel
         {
-            token.store(true, std::sync::atomic::Ordering::Relaxed);
+            token.store(true, Ordering::Relaxed);
             operation.cancel_requested = true;
         }
     }

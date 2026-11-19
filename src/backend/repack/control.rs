@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use crate::backend::{BackendError, Result};
 
 use crate::backend::dpkg::info_file;
 use crate::backend::fs_layout::FsLayout;
@@ -81,45 +81,86 @@ const EXTRA_CONTROL_FILES: [(&str, u32); 8] = [
     ("symbols", 0o644),
 ];
 
-/// 写出 `DEBIAN/control`、维护脚本等控制文件。
-pub fn write_control(
-    debian_dir: &Path,
-    package: &InstalledPackage,
-    layout: &FsLayout,
-    data_bytes: u64,
-    progress: &mut dyn FnMut(&str),
-) -> Result<()> {
-    progress("正在收集软件包控制信息…");
-    fs::create_dir_all(debian_dir)?;
+/// 控制文件生成所需的完整输入。
+pub struct ControlWrite<'a> {
+    /// 产物中的 `DEBIAN` 目录。
+    pub debian_dir: &'a Path,
+    /// 已安装软件包记录。
+    pub package: &'a InstalledPackage,
+    /// 系统路径布局。
+    pub layout: &'a FsLayout,
+    /// 已复制文件的总字节数。
+    pub data_bytes: u64,
+    /// 阶段进度回调。
+    pub progress: &'a mut dyn FnMut(&str),
+}
 
+/// 写出 `DEBIAN/control`、维护脚本等控制文件。
+pub fn write_control(input: ControlWrite<'_>) -> Result<()> {
+    let ControlWrite {
+        debian_dir,
+        package,
+        layout,
+        data_bytes,
+        progress,
+    } = input;
+    progress("正在收集软件包控制信息…");
+    fs::create_dir_all(debian_dir)
+        .map_err(|source| BackendError::io("创建控制文件目录", debian_dir.display(), source))?;
     let installed_size_kb = data_bytes.div_ceil(1024);
     let control = build_control(package, installed_size_kb);
     let control_path = debian_dir.join("control");
-    fs::write(&control_path, control)?;
+    fs::write(&control_path, control)
+        .map_err(|source| BackendError::io("写入 control 文件", control_path.display(), source))?;
     set_mode(&control_path, 0o644)?;
-
     for (suffix, mode) in EXTRA_CONTROL_FILES {
-        let Some(source) = info_file(
+        copy_extra_control_file(&ExtraControlFile {
+            debian_dir,
+            package,
             layout,
-            &package.metadata.name,
-            &package.metadata.arch,
             suffix,
-        ) else {
-            continue;
-        };
-        let destination = debian_dir.join(suffix);
-        fs::copy(&source, &destination)
-            .with_context(|| format!("复制 {} 失败", source.display()))?;
-        set_mode(&destination, mode)?;
+            mode,
+        })?;
     }
     set_mode(debian_dir, 0o755)
+}
+
+#[derive(Clone, Copy)]
+struct ExtraControlFile<'a> {
+    debian_dir: &'a Path,
+    package: &'a InstalledPackage,
+    layout: &'a FsLayout,
+    suffix: &'a str,
+    mode: u32,
+}
+
+fn copy_extra_control_file(input: &ExtraControlFile<'_>) -> Result<()> {
+    let ExtraControlFile {
+        debian_dir,
+        package,
+        layout,
+        suffix,
+        mode,
+    } = input;
+    let Some(source) = info_file(
+        layout,
+        &package.metadata.name,
+        &package.metadata.arch,
+        suffix,
+    ) else {
+        return Ok(());
+    };
+    let destination = debian_dir.join(suffix);
+    fs::copy(&source, &destination)
+        .map_err(|source_error| BackendError::io("复制控制文件", source.display(), source_error))?;
+    set_mode(&destination, *mode)
 }
 
 /// 生成 control 文本。
 fn build_control(package: &InstalledPackage, installed_size_kb: u64) -> String {
     let metadata = &package.metadata;
-    let mut output = String::new();
-    let mut written: HashSet<&str> = HashSet::new();
+    let mut output = String::with_capacity(package.control.fields.len().saturating_mul(32));
+    let mut written: HashSet<&str> = HashSet::with_capacity(package.control.fields.len());
 
     for (key, value) in &package.control.fields {
         if !CONTROL_FIELDS.contains(&key.as_str()) {
@@ -181,12 +222,13 @@ fn fallback_value(key: &str, metadata: &PackageMetadata, installed_size_kb: u64)
 mod tests {
     use super::*;
     use crate::deb822::parse_stanzas;
+    use crate::model::DpkgState;
 
     fn package(stanza_text: &str) -> InstalledPackage {
         let stanzas = parse_stanzas(stanza_text);
         InstalledPackage {
             metadata: PackageMetadata::from_stanza(&stanzas[0]),
-            dpkg: crate::model::DpkgState::parse("install ok installed"),
+            dpkg: DpkgState::parse("install ok installed"),
             control: stanzas[0].clone(),
             files: Vec::new(),
             desktop: None,

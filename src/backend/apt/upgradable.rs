@@ -11,22 +11,28 @@
 
 use std::collections::HashSet;
 use std::process::Command;
+use std::time::Duration;
 
-use anyhow::{Result, bail};
+use crate::backend::{BackendError, Result};
+
+use crate::util::run_command;
 
 /// 询问 APT 哪些包可以升级。
 ///
 /// 失败（未装 apt、索引过期、锁被占用）时返回 `Err`，由上层决定是否退回
 /// 本地版本比较，不静默吞掉。
 pub fn list_upgradable() -> Result<HashSet<String>> {
-    let output = Command::new("apt")
-        .args(["list", "--upgradable"])
-        .env("LC_ALL", "C")
-        .output()
-        .map_err(|error| anyhow::anyhow!("无法执行 apt list：{error}"))?;
+    let mut command = Command::new("apt");
+    command.args(["list", "--upgradable"]).env("LC_ALL", "C");
+    let output = run_command(&mut command, Duration::from_secs(120))
+        .map_err(|source| BackendError::command("查询可升级软件包", source))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("apt list --upgradable 失败：{}", stderr.trim());
+        return Err(BackendError::CommandFailed {
+            operation: "查询可升级软件包",
+            code: output.status.code().unwrap_or(-1),
+            detail: stderr.trim().to_string(),
+        });
     }
     Ok(parse_upgradable_output(&String::from_utf8_lossy(
         &output.stdout,

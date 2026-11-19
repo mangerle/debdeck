@@ -13,11 +13,14 @@
 //! `dpkg --set-selections` 混用造成「谁权威」的歧义。
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use crate::backend::{BackendError, Result};
 
-use crate::util::command_exists;
+use crate::util::{command_exists, run_command};
+
+use super::deb_file;
 
 /// dpkg 允许的包名字符集。空串与以 `-` 开头的值被拒绝，因为它们会被
 /// 当成命令行选项（例如 `--force-remove-essential`）。
@@ -34,7 +37,10 @@ fn ensure_package_name(pkg: &str) -> Result<()> {
     if valid_package_name(pkg) {
         Ok(())
     } else {
-        bail!("无效的软件包名称：{pkg}");
+        Err(BackendError::invalid(
+            "校验软件包名称",
+            format!("无效的软件包名称：{pkg}"),
+        ))
     }
 }
 
@@ -45,14 +51,12 @@ fn ensure_package_name(pkg: &str) -> Result<()> {
 /// 取消或系统缺少认证代理，额外给出提示。
 fn run_privileged(args: &[&str]) -> Result<String> {
     if !command_exists("pkexec") {
-        bail!("未找到 pkexec，无法请求管理员权限。请安装 policykit-1 后重试。");
+        return Err(BackendError::missing_program("请求管理员权限", "pkexec"));
     }
-    let output = Command::new("pkexec")
-        .args(args)
-        .env("DEBIAN_FRONTEND", "noninteractive")
-        .stdin(Stdio::null())
-        .output()
-        .context("无法启动 pkexec")?;
+    let mut command = Command::new("pkexec");
+    command.args(args).env("DEBIAN_FRONTEND", "noninteractive");
+    let output = run_command(&mut command, Duration::from_mins(30))
+        .map_err(|source| BackendError::command("请求管理员权限", source))?;
     let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !stderr.is_empty() {
@@ -70,10 +74,16 @@ fn run_privileged(args: &[&str]) -> Result<String> {
     } else {
         ""
     };
-    if text.is_empty() {
-        bail!("命令执行失败（退出码 {code}）。{hint}");
-    }
-    bail!("命令执行失败（退出码 {code}）：\n{text}{hint}");
+    let detail = if text.is_empty() {
+        format!("命令执行失败（退出码 {code}）。{hint}")
+    } else {
+        format!("命令执行失败（退出码 {code}）：\n{text}{hint}")
+    };
+    Err(BackendError::CommandFailed {
+        operation: "执行管理员命令",
+        code,
+        detail,
+    })
 }
 
 /// 卸载软件包（保留依赖处理给 apt）。
@@ -100,10 +110,13 @@ pub fn set_hold_state(pkg: &str, hold: bool) -> Result<()> {
 /// `--reinstall` 不能省：本地 deb 的版本与已安装版本相同时，`apt-get install`
 /// 会直接判定「已是最新版」并成功退出，用户点了一次安装却什么都没发生。
 pub fn local_install_args(path: &Path) -> Result<Vec<String>> {
-    let path = super::deb_file::canonicalize(path)?;
-    let path = path
-        .to_str()
-        .context("安装包路径包含非 UTF-8 字符，无法传给 apt-get")?;
+    let path = deb_file::canonicalize(path).map_err(|source| BackendError::Package { source })?;
+    let path = path.to_str().ok_or_else(|| {
+        BackendError::invalid(
+            "构造本地安装参数",
+            "安装包路径包含非 UTF-8 字符，无法传给 apt-get",
+        )
+    })?;
     Ok(vec![
         "/usr/bin/apt-get".to_string(),
         "install".to_string(),
@@ -150,6 +163,6 @@ mod tests {
     #[test]
     fn rejects_missing_install_file_before_pkexec() {
         let error = local_install_args(Path::new("/no/such/package.deb")).unwrap_err();
-        assert!(format!("{error:#}").contains("找不到安装包"), "{error:#}");
+        assert!(error.to_string().contains("找不到安装包"), "{error}");
     }
 }

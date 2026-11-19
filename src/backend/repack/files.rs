@@ -9,7 +9,7 @@ use std::fs::{self, Metadata};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use anyhow::Result;
+use crate::backend::{BackendError, Result};
 
 use super::{PROGRESS_EVERY, ensure_not_cancelled};
 
@@ -30,55 +30,62 @@ pub fn copy_installed_files(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(&str),
 ) -> Result<CopySummary> {
-    let mut summary = CopySummary::default();
+    let mut summary = CopySummary {
+        copied_files: Vec::with_capacity(files.len()),
+        ..CopySummary::default()
+    };
     progress("正在复制已安装文件…");
-
     for (index, file) in files.iter().enumerate() {
         ensure_not_cancelled(cancel)?;
         if index > 0 && index % PROGRESS_EVERY == 0 {
             progress(&format!("正在复制已安装文件…已处理 {index} 个"));
         }
-
-        let source = Path::new(file);
-        let Some(relative) = safe_relative_path(source) else {
-            summary.skipped += 1;
-            continue;
-        };
-        let Ok(metadata) = fs::symlink_metadata(source) else {
-            // 清单里有、磁盘上没有：卸载或手工删除过的残留。
-            summary.skipped += 1;
-            continue;
-        };
-        let destination = work.join(&relative);
-        if !create_parent_dir(&destination) {
-            summary.skipped += 1;
-            continue;
-        }
-
-        if metadata.is_dir() {
-            copy_directory(&destination, &metadata);
-        } else if metadata.file_type().is_symlink() {
-            if !copy_symlink(source, &destination) {
-                summary.skipped += 1;
-            }
-        } else if metadata.is_file() {
-            match copy_regular_file(source, &destination, &metadata) {
-                Ok(bytes) => {
-                    summary.data_bytes += bytes;
-                    summary.copied_files.push((relative, destination));
-                }
-                Err(error) => {
-                    tracing::warn!("复制 {} 失败：{error}", source.display());
-                    summary.skipped += 1;
-                }
-            }
-        } else {
-            // 设备文件、socket、fifo：不属于普通 deb 包能承载的内容。
-            summary.skipped += 1;
-        }
+        copy_entry(file, work, &mut summary);
     }
-
     Ok(summary)
+}
+
+fn copy_entry(file: &str, work: &Path, summary: &mut CopySummary) {
+    let source = Path::new(file);
+    let Some(relative) = safe_relative_path(source) else {
+        mark_skipped(summary);
+        return;
+    };
+    let Ok(metadata) = fs::symlink_metadata(source) else {
+        // 清单里有、磁盘上没有：卸载或手工删除过的残留。
+        mark_skipped(summary);
+        return;
+    };
+    let destination = work.join(&relative);
+    if !create_parent_dir(&destination) {
+        mark_skipped(summary);
+        return;
+    }
+    if metadata.is_dir() {
+        copy_directory(&destination, &metadata);
+    } else if metadata.file_type().is_symlink() {
+        if !copy_symlink(source, &destination) {
+            mark_skipped(summary);
+        }
+    } else if metadata.is_file() {
+        match copy_regular_file(source, &destination, &metadata) {
+            Ok(bytes) => {
+                summary.data_bytes = summary.data_bytes.saturating_add(bytes);
+                summary.copied_files.push((relative, destination));
+            }
+            Err(error) => {
+                tracing::warn!("复制 {} 失败：{error}", source.display());
+                mark_skipped(summary);
+            }
+        }
+    } else {
+        // 设备文件、socket、fifo：不属于普通 deb 包能承载的内容。
+        mark_skipped(summary);
+    }
+}
+
+fn mark_skipped(summary: &mut CopySummary) {
+    summary.skipped = summary.skipped.saturating_add(1);
 }
 
 /// 去掉开头的 `/` 并拒绝任何越界组件，得到包内相对路径。
@@ -135,7 +142,9 @@ fn copy_symlink(source: &Path, destination: &Path) -> bool {
 }
 
 fn copy_regular_file(source: &Path, destination: &Path, metadata: &Metadata) -> Result<u64> {
-    let bytes = fs::copy(source, destination)?;
+    let bytes = fs::copy(source, destination).map_err(|source_error| {
+        BackendError::io("复制已安装文件", source.display(), source_error)
+    })?;
     // 权限跟随源文件：可执行位、setuid 位都会影响包能否正常工作。
     let _ = fs::set_permissions(destination, metadata.permissions());
     Ok(bytes)
