@@ -9,13 +9,16 @@
 //!   后台执行器，完成后再回到 UI 线程更新提示。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 use gpui_kit::{ClipboardItem, Context};
 
+use crate::app::self_update::SelfUpdatePrimaryAction;
 use crate::app::state::{Action, Confirm, DebDeckApp, DownloadDialog, ModalState, Operation};
 use crate::model::{MenuEntryState, RepoPackage};
 use crate::runtime::{
-    DownloadRequest, launch_desktop, open_directory, set_menu_visibility as runtime_set_menu,
+    BackendEvent, DownloadRequest, launch_desktop, open_directory,
+    set_menu_visibility as runtime_set_menu,
 };
 
 struct MenuVisibilityChange {
@@ -296,6 +299,109 @@ impl DebDeckApp {
             Confirm::Uninstall { pkg, name } => self.start_uninstall(pkg, &name),
             Confirm::Hold { pkg, name, hold } => self.start_hold(pkg, &name, hold),
             Confirm::Build { pkg, name } => self.start_build(&pkg, &name),
+        }
+    }
+
+    /// 启动后检查一次远端清单；只更新标题栏状态，不主动弹出窗口。
+    pub(crate) fn start_startup_update_check(&mut self) {
+        if !self.self_update.is_idle() {
+            return;
+        }
+        self.start_self_update_check(false);
+    }
+
+    /// 用户从标题栏打开更新弹窗；没有可复用结果时立即发起检查。
+    pub(crate) fn open_self_update_dialog(&mut self, cx: &mut Context<Self>) {
+        self.dialogs.modal = Some(ModalState::SelfUpdate);
+        if !self.self_update.has_result() && !self.self_update.is_busy() {
+            self.start_self_update_check(true);
+        }
+        cx.notify();
+    }
+
+    /// 开始一次清单检查；`keep_modal` 决定用户打开弹窗后是否继续保持显示。
+    fn start_self_update_check(&mut self, keep_modal: bool) {
+        if self.self_update.is_busy() {
+            return;
+        }
+        self.self_update.begin_check();
+        if keep_modal {
+            self.dialogs.modal = Some(ModalState::SelfUpdate);
+        }
+        if let Err(error) = self.tasks.check_self_update() {
+            self.self_update.fail_submit("无法开始检查更新", &error);
+        }
+    }
+
+    /// 下载已确认可用的新版本。
+    pub(crate) fn download_self_update(&mut self, cx: &mut Context<Self>) {
+        if self.self_update.is_busy() {
+            return;
+        }
+        let Some(info) = self.self_update.available_info() else {
+            return;
+        };
+        let version = info.version();
+        self.self_update.begin_download(version);
+        if let Err(error) = self.tasks.download_self_update(info) {
+            self.self_update.fail_submit("无法开始下载更新", &error);
+        }
+        cx.notify();
+    }
+
+    /// 安装已下载并验签的更新包。
+    pub(crate) fn install_self_update(&mut self, cx: &mut Context<Self>) {
+        if self.self_update.is_busy() {
+            return;
+        }
+        let Some(downloaded) = self.self_update.downloaded_update() else {
+            return;
+        };
+        let version = downloaded.version();
+        self.self_update.begin_install(version);
+        if let Err(error) = self.tasks.install_self_update(downloaded) {
+            self.self_update.fail_submit("无法开始安装更新", &error);
+        }
+        cx.notify();
+    }
+
+    /// 用户点击“立即重启”：请求主循环退出，旧进程收尾后由入口拉起新版本。
+    pub(crate) fn restart_after_self_update(&mut self, cx: &mut Context<Self>) {
+        if !self.self_update.is_installed() {
+            return;
+        }
+        self.restart_requested.store(true, Ordering::Relaxed);
+        cx.quit();
+    }
+
+    /// 当前弹窗主按钮对应的动作。
+    pub(crate) fn perform_self_update_action(&mut self, cx: &mut Context<Self>) {
+        match self.self_update.primary_action() {
+            SelfUpdatePrimaryAction::Check => self.start_self_update_check(true),
+            SelfUpdatePrimaryAction::Download => self.download_self_update(cx),
+            SelfUpdatePrimaryAction::Install => self.install_self_update(cx),
+            SelfUpdatePrimaryAction::Restart => self.restart_after_self_update(cx),
+            SelfUpdatePrimaryAction::Busy => {}
+        }
+        cx.notify();
+    }
+
+    /// 应用后台自更新事件。
+    pub(crate) fn apply_self_update_event(&mut self, event: BackendEvent) {
+        match event {
+            BackendEvent::SelfUpdateChecked(result) => {
+                self.self_update.apply_check_result(result);
+            }
+            BackendEvent::SelfUpdateDownloadProgress { percent, message } => {
+                self.self_update.apply_progress(percent, message);
+            }
+            BackendEvent::SelfUpdateDownloaded(result) => {
+                self.self_update.apply_download_result(result);
+            }
+            BackendEvent::SelfUpdateInstalled(result) => {
+                self.self_update.apply_install_result(result);
+            }
+            _ => {}
         }
     }
 }

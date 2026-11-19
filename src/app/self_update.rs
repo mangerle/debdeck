@@ -12,13 +12,7 @@
 //! 下载进度只保留最新百分比与阶段文案，不保存历史曲线；更新任务与普通软件包
 //! 下载隔离，因此不会因为其他下载排队而阻塞自身升级。
 
-use std::sync::atomic::Ordering;
-
-use gpui_kit::Context;
-
-use crate::runtime::{BackendEvent, DownloadedUpdate, TaskSubmitError, UpdateInfo};
-
-use super::state::{DebDeckApp, ModalState};
+use crate::runtime::{DownloadedUpdate, TaskSubmitError, UpdateInfo};
 
 /// 更新日志展示上限：远端清单属于外部输入，超长正文不允许直接铺满内存与界面。
 const MAX_RELEASE_NOTES_CHARS: usize = 64 * 1024;
@@ -137,21 +131,58 @@ impl SelfUpdate {
         )
     }
 
+    /// 是否尚未发起过检查。
+    pub(super) fn is_idle(&self) -> bool {
+        matches!(self.status, SelfUpdateStatus::Idle)
+    }
+
     /// 是否有可复用的检查或下载成果，避免每次打开弹窗都重新请求远端。
-    fn has_result(&self) -> bool {
+    pub(super) fn has_result(&self) -> bool {
         self.available.is_some() || self.downloaded.is_some() || self.installed.is_some()
     }
 
+    /// 取出已检查到的可用版本信息，供下载任务使用。
+    pub(super) fn available_info(&self) -> Option<UpdateInfo> {
+        self.available.clone()
+    }
+
+    /// 取出已下载并验签的更新包，供安装任务使用。
+    pub(super) fn downloaded_update(&self) -> Option<DownloadedUpdate> {
+        self.downloaded.clone()
+    }
+
+    /// 是否已安装新版本并等待重启生效。
+    pub(super) fn is_installed(&self) -> bool {
+        self.installed.is_some()
+    }
+
     /// 进入检查阶段并清空旧的下载成果。
-    fn begin_check(&mut self) {
+    pub(super) fn begin_check(&mut self) {
         self.available = None;
         self.downloaded = None;
         self.installed = None;
         self.status = SelfUpdateStatus::Checking;
     }
 
+    /// 进入下载阶段。
+    pub(super) fn begin_download(&mut self, version: String) {
+        self.status = SelfUpdateStatus::Downloading {
+            version,
+            percent: None,
+            message: "正在准备下载更新包".to_string(),
+        };
+    }
+
+    /// 进入安装阶段。
+    pub(super) fn begin_install(&mut self, version: String) {
+        self.status = SelfUpdateStatus::Installing {
+            version,
+            message: "正在请求管理员授权并安装更新".to_string(),
+        };
+    }
+
     /// 记录下载/安装阶段文案。
-    fn apply_progress(&mut self, percent: Option<f32>, message: String) {
+    pub(super) fn apply_progress(&mut self, percent: Option<f32>, message: String) {
         match &mut self.status {
             SelfUpdateStatus::Downloading {
                 percent: current,
@@ -172,7 +203,7 @@ impl SelfUpdate {
     }
 
     /// 记录检查结果。
-    fn apply_check_result(&mut self, result: Result<Option<UpdateInfo>, String>) {
+    pub(super) fn apply_check_result(&mut self, result: Result<Option<UpdateInfo>, String>) {
         self.status = match result {
             Ok(Some(info)) => {
                 self.available = Some(info);
@@ -184,7 +215,7 @@ impl SelfUpdate {
     }
 
     /// 记录下载结果；失败时保留 available，允许直接重试下载。
-    fn apply_download_result(&mut self, result: Result<DownloadedUpdate, String>) {
+    pub(super) fn apply_download_result(&mut self, result: Result<DownloadedUpdate, String>) {
         self.status = match result {
             Ok(downloaded) => {
                 self.downloaded = Some(downloaded);
@@ -195,7 +226,7 @@ impl SelfUpdate {
     }
 
     /// 记录安装结果；失败时保留 downloaded，允许直接重试安装。
-    fn apply_install_result(&mut self, result: Result<(), String>) {
+    pub(super) fn apply_install_result(&mut self, result: Result<(), String>) {
         self.status = match result {
             Ok(()) => {
                 let version = self
@@ -212,14 +243,14 @@ impl SelfUpdate {
     }
 
     /// 任务提交失败时把错误写入状态；调用方负责请求重绘。
-    fn fail_submit(&mut self, context: &str, error: &TaskSubmitError) {
+    pub(super) fn fail_submit(&mut self, context: &str, error: &TaskSubmitError) {
         self.status = SelfUpdateStatus::Failed {
             message: format!("{context}：{error}"),
         };
     }
 
     /// 当前主按钮动作由已保存的阶段成果决定。
-    fn primary_action(&self) -> SelfUpdatePrimaryAction {
+    pub(super) fn primary_action(&self) -> SelfUpdatePrimaryAction {
         if self.is_busy() {
             return SelfUpdatePrimaryAction::Busy;
         }
@@ -305,118 +336,6 @@ impl SelfUpdate {
             indeterminate,
             primary: self.primary_action(),
             failed,
-        }
-    }
-}
-
-impl DebDeckApp {
-    /// 启动后检查一次远端清单；只更新标题栏状态，不主动弹出窗口。
-    pub(crate) fn start_startup_update_check(&mut self) {
-        if !matches!(self.self_update.status, SelfUpdateStatus::Idle) {
-            return;
-        }
-        self.start_self_update_check(false);
-    }
-
-    /// 用户从标题栏打开更新弹窗；没有可复用结果时立即发起检查。
-    pub(crate) fn open_self_update_dialog(&mut self, cx: &mut Context<Self>) {
-        self.dialogs.modal = Some(ModalState::SelfUpdate);
-        if !self.self_update.has_result() && !self.self_update.is_busy() {
-            self.start_self_update_check(true);
-        }
-        cx.notify();
-    }
-
-    /// 开始一次清单检查；`keep_modal` 决定用户打开弹窗后是否继续保持显示。
-    fn start_self_update_check(&mut self, keep_modal: bool) {
-        if self.self_update.is_busy() {
-            return;
-        }
-        self.self_update.begin_check();
-        if keep_modal {
-            self.dialogs.modal = Some(ModalState::SelfUpdate);
-        }
-        if let Err(error) = self.tasks.check_self_update() {
-            self.self_update.fail_submit("无法开始检查更新", &error);
-        }
-    }
-
-    /// 下载已确认可用的新版本。
-    pub(crate) fn download_self_update(&mut self, cx: &mut Context<Self>) {
-        if self.self_update.is_busy() {
-            return;
-        }
-        let Some(info) = self.self_update.available.clone() else {
-            return;
-        };
-        let version = info.version();
-        self.self_update.status = SelfUpdateStatus::Downloading {
-            version,
-            percent: None,
-            message: "正在准备下载更新包".to_string(),
-        };
-        if let Err(error) = self.tasks.download_self_update(info) {
-            self.self_update.fail_submit("无法开始下载更新", &error);
-        }
-        cx.notify();
-    }
-
-    /// 安装已下载并验签的更新包。
-    pub(crate) fn install_self_update(&mut self, cx: &mut Context<Self>) {
-        if self.self_update.is_busy() {
-            return;
-        }
-        let Some(downloaded) = self.self_update.downloaded.clone() else {
-            return;
-        };
-        let version = downloaded.version();
-        self.self_update.status = SelfUpdateStatus::Installing {
-            version,
-            message: "正在请求管理员授权并安装更新".to_string(),
-        };
-        if let Err(error) = self.tasks.install_self_update(downloaded) {
-            self.self_update.fail_submit("无法开始安装更新", &error);
-        }
-        cx.notify();
-    }
-
-    /// 用户点击“立即重启”：请求主循环退出，旧进程收尾后由入口拉起新版本。
-    pub(crate) fn restart_after_self_update(&mut self, cx: &mut Context<Self>) {
-        if self.self_update.installed.is_none() {
-            return;
-        }
-        self.restart_requested.store(true, Ordering::Relaxed);
-        cx.quit();
-    }
-
-    /// 当前弹窗主按钮对应的动作。
-    pub(crate) fn perform_self_update_action(&mut self, cx: &mut Context<Self>) {
-        match self.self_update.primary_action() {
-            SelfUpdatePrimaryAction::Check => self.start_self_update_check(true),
-            SelfUpdatePrimaryAction::Download => self.download_self_update(cx),
-            SelfUpdatePrimaryAction::Install => self.install_self_update(cx),
-            SelfUpdatePrimaryAction::Restart => self.restart_after_self_update(cx),
-            SelfUpdatePrimaryAction::Busy => {}
-        }
-        cx.notify();
-    }
-
-    /// 应用后台自更新事件。
-    pub(crate) fn apply_self_update_event(&mut self, event: BackendEvent) {
-        match event {
-            BackendEvent::SelfUpdateChecked(result) => {
-                self.self_update.apply_check_result(result);
-            }
-            BackendEvent::SelfUpdateDownloadProgress { percent, message } => {
-                self.self_update.apply_progress(percent, message);
-            }
-            BackendEvent::SelfUpdateDownloaded(result) => {
-                self.self_update.apply_download_result(result);
-            }
-            BackendEvent::SelfUpdateInstalled(result) => {
-                self.self_update.apply_install_result(result);
-            }
-            _ => {}
         }
     }
 }
