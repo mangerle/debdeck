@@ -6,6 +6,7 @@
 //! 下标越界的可能也被这个凭据本身挡死。
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use crate::model::AppEntry;
@@ -34,7 +35,7 @@ pub(crate) struct ListView {
     pub(crate) detail_tab: DetailTab,
     pub(crate) files_query: String,
     /// `Catalog::entries` 的下标，按当前筛选与排序排列。
-    visible: Vec<usize>,
+    visible: Arc<[usize]>,
     computed: Option<ComputeKey>,
 }
 
@@ -48,7 +49,7 @@ impl Default for ListView {
             selected: None,
             detail_tab: DetailTab::Info,
             files_query: String::new(),
-            visible: Vec::new(),
+            visible: Arc::from([]),
             computed: None,
         }
     }
@@ -62,6 +63,11 @@ impl ListView {
     /// 当前筛选条件下应显示的行。
     pub(crate) fn visible(&self) -> &[usize] {
         &self.visible
+    }
+
+    /// 以 O(1) 引用计数共享当前可见行下标切片。
+    pub(crate) fn visible_arc(&self) -> Arc<[usize]> {
+        Arc::clone(&self.visible)
     }
 
     /// 凭据是否仍然有效。逐字段比较，避免每帧为搜索词分配一份克隆。
@@ -82,7 +88,7 @@ impl ListView {
         }
 
         let entries = catalog.entries();
-        self.visible = select_visible_entries(
+        self.visible = Arc::from(select_visible_entries(
             entries,
             FilterOptions {
                 search: &self.search,
@@ -90,7 +96,7 @@ impl ListView {
                 sort: self.sort,
                 ascending: self.ascending,
             },
-        );
+        ));
         self.computed = Some(ComputeKey {
             revision: catalog.revision(),
             search: self.search.clone(),

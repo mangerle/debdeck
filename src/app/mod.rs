@@ -352,9 +352,9 @@ impl DebDeckApp {
             search_input,
             files_input,
             sort_select,
-            entries: Arc::new(Vec::new()),
+            entries: Arc::from([]),
             entries_revision: 0,
-            visible: Arc::new(Vec::new()),
+            visible: Arc::from([]),
             selected_pkg: None,
             clear_files_input: false,
             loaded_files: None,
@@ -381,17 +381,17 @@ impl DebDeckApp {
 
     /// 在状态变更路径重算可见行与快照，不在渲染函数里做状态突变。
     ///
-    /// Catalog 条目只在版本变化时复制；搜索/排序只更新可见下标快照，不会把 7 万条
-    /// 行的字符串整表克隆。
+    /// Catalog 条目与可见行下标均以 `Arc<[T]>` 共享，更新快照时仅做 O(1) 指针克隆，
+    /// 不再把 7 万条行的字符串整表深拷贝。
     pub(crate) fn sync_catalog_view(&mut self) {
         let recomputed = self.list.ensure_current(&self.catalog);
         let revision = self.catalog.revision();
         if self.entries_revision != revision {
-            self.entries = Arc::new(self.catalog.entries().to_vec());
+            self.entries = self.catalog.entries_arc();
             self.entries_revision = revision;
         }
         if recomputed {
-            self.visible = Arc::new(self.list.visible().to_vec());
+            self.visible = self.list.visible_arc();
         }
 
         if self.selected_pkg != self.list.selected {

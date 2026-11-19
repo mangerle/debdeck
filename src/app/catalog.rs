@@ -5,6 +5,7 @@
 //! 仍然有效 —— 取代原先「谁忘了把 dirty 置位就 panic」的人肉约定。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::model::{
     AppEntry, InstalledData, InstalledPackage, MenuEntryState, RepoPackage, RepositoryData,
@@ -20,7 +21,7 @@ pub(crate) struct Catalog {
     /// APT 认定的可升级包集合；`None` 表示当前只能靠本地版本比较（降级判定）。
     upgradable: Option<HashSet<String>>,
     upgradable_degraded: bool,
-    entries: Vec<AppEntry>,
+    entries: Arc<[AppEntry]>,
     /// 包名 → `entries` 下标。
     index: HashMap<String, usize>,
     counts: Counts,
@@ -37,7 +38,7 @@ impl Catalog {
             repository: None,
             upgradable: None,
             upgradable_degraded: false,
-            entries: Vec::new(),
+            entries: Arc::from([]),
             index: HashMap::new(),
             counts: Counts::default(),
             revision: 0,
@@ -107,12 +108,13 @@ impl Catalog {
     fn rebuild(&mut self) {
         let empty_repository = RepositoryData::default();
         let repository = self.repository.as_ref().unwrap_or(&empty_repository);
-        self.entries = match &self.installed {
+        let entries = match &self.installed {
             Some(installed) => {
                 crate::model::build_entries(installed, repository, self.upgradable.as_ref())
             }
             None => Vec::new(),
         };
+        self.entries = Arc::from(entries);
 
         self.index = self
             .entries
@@ -149,6 +151,10 @@ impl Catalog {
 
     pub(crate) fn entries(&self) -> &[AppEntry] {
         &self.entries
+    }
+
+    pub(crate) fn entries_arc(&self) -> Arc<[AppEntry]> {
+        Arc::clone(&self.entries)
     }
 
     pub(crate) fn entry(&self, pkg: &str) -> Option<&AppEntry> {

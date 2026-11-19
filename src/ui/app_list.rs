@@ -55,8 +55,8 @@ fn app_list(app: &DebDeckApp, cx: &mut Context<DebDeckApp>) -> AnyElement {
 }
 
 struct AppListRows {
-    entries: Arc<Vec<AppEntry>>,
-    visible: Arc<Vec<usize>>,
+    entries: Arc<[AppEntry]>,
+    visible: Arc<[usize]>,
     selected: Option<String>,
     entity: Entity<DebDeckApp>,
 }

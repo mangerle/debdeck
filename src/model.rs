@@ -4,7 +4,7 @@
 //! 把已安装数据与软件源数据合并成界面条目（[`build_entries`]）的规则。
 //! 读写系统的部分在 `backend`，线程与事件在 `runtime`，本模块全部是纯数据与纯函数。
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -288,9 +288,17 @@ pub fn build_entries(
     repository: &RepositoryData,
     upgradable: Option<&HashSet<String>>,
 ) -> Vec<AppEntry> {
-    let mut names = BTreeSet::new();
-    names.extend(installed.packages.keys().cloned());
-    names.extend(repository.packages.keys().cloned());
+    let mut names: Vec<&str> = Vec::with_capacity(
+        installed
+            .packages
+            .len()
+            .saturating_add(repository.packages.len()),
+    );
+    names.extend(installed.packages.keys().map(String::as_str));
+    names.extend(repository.packages.keys().map(String::as_str));
+    names.sort_unstable();
+    names.dedup();
+
     let mut entries = Vec::with_capacity(names.len());
     for name in names {
         entries.push(build_entry(name, installed, repository, upgradable));
@@ -299,28 +307,28 @@ pub fn build_entries(
 }
 
 fn build_entry(
-    name: String,
+    name: &str,
     installed: &InstalledData,
     repository: &RepositoryData,
     upgradable: Option<&HashSet<String>>,
 ) -> AppEntry {
-    let installed_pkg = installed.packages.get(&name);
+    let installed_pkg = installed.packages.get(name);
     let installed_meta = installed_pkg.map(|pkg| &pkg.metadata);
-    let latest = repository.latest(&name).map(|package| &package.metadata);
+    let latest = repository.latest(name).map(|package| &package.metadata);
     let desktop = installed_pkg.and_then(|pkg| pkg.desktop.as_ref());
     let display_name = desktop
         .map(|desktop| desktop.name.clone())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| name.clone());
+        .unwrap_or_else(|| name.to_string());
     let summary = entry_summary(desktop, installed_meta, latest);
-    let (search_text, sort_name) = build_search_text(&display_name, &name, &summary);
+    let (search_text, sort_name) = build_search_text(&display_name, name, &summary);
     let has_update = has_update(installed_meta, latest, upgradable);
     let installed_size_kb = installed_meta
         .map(|metadata| metadata.installed_size_kb)
         .or_else(|| latest.map(|metadata| metadata.installed_size_kb))
         .unwrap_or(0);
     AppEntry {
-        pkg: name,
+        pkg: name.to_string(),
         display_name,
         is_installed: installed_pkg.is_some(),
         is_gui: desktop.is_some(),

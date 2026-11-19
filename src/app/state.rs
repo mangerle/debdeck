@@ -344,11 +344,11 @@ pub(crate) struct DebDeckApp {
     pub(crate) files_input: Entity<InputState>,
     pub(crate) sort_select: SortSelect,
     /// `Catalog::entries` 的快照，随 revision 更新；虚拟列表闭包持有它。
-    pub(crate) entries: Arc<Vec<AppEntry>>,
+    pub(crate) entries: Arc<[AppEntry]>,
     /// 快照对应的 Catalog 版本号。
     pub(crate) entries_revision: usize,
     /// 当前可见行下标快照。
-    pub(crate) visible: Arc<Vec<usize>>,
+    pub(crate) visible: Arc<[usize]>,
     /// 快照对应的选中项，用来判断是否需要清理文件过滤。
     pub(crate) selected_pkg: Option<String>,
     /// 选中项在无窗口上下文中发生变化时，延后到下次绘制同步清空文件输入框。
