@@ -1,6 +1,5 @@
-//! 模态框：一次一个，绘制完把结果交回应用层。
+//! 模态框：一次一个，绘制期只读借用模态状态。
 //!
-//! 模态在绘制期间从 [`Dialogs`](crate::app::Dialogs) 取出、结束后放回；
 //! 按钮回调通过 `cx.listener` 直接修改应用状态，因此绘制函数不需要持有
 //! `TaskManager`，也不认识提权与文件写入。
 
@@ -18,21 +17,18 @@ use crate::app::{DebDeckApp, ModalState};
 
 /// 绘制当前模态，返回覆盖层；没有模态时返回 `None`。
 pub(crate) fn show(
-    app: &mut DebDeckApp,
+    app: &DebDeckApp,
     _window: &mut Window,
     cx: &mut Context<DebDeckApp>,
 ) -> Option<AnyElement> {
-    let modal = app.dialogs.take_modal()?;
-    let element = match &modal {
-        ModalState::Confirm(confirm) => confirm::show(app, confirm, cx),
-        ModalState::Download(dialog) => download::show(app, dialog, cx),
-        ModalState::Operation(operation) => operation::show(app, operation, cx),
-        ModalState::SelfUpdate => self_update::show(app, cx),
-        ModalState::Message { title, message } => message::show(app, title, message, cx),
+    let modal = app.dialogs.modal.as_ref()?;
+    let element = match modal {
+        ModalState::Confirm(confirm) => confirm::show(&app.paths, confirm, cx),
+        ModalState::Download(dialog) => download::show(&app.catalog, dialog, cx),
+        ModalState::Operation(operation) => operation::show(operation, cx),
+        ModalState::SelfUpdate => self_update::show(&app.self_update, cx),
+        ModalState::Message { title, message } => message::show(title, message, cx),
     };
-    // 放回：模态在回调执行前必须仍然存在，否则后台进度事件会找不到它。
-    // 回调若关闭/替换模态，会在事件阶段覆盖这次放回。
-    app.dialogs.restore_modal(Some(modal));
     Some(element)
 }
 

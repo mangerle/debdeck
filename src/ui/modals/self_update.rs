@@ -9,7 +9,7 @@ use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::app::{DebDeckApp, SelfUpdatePrimaryAction, SelfUpdateSnapshot};
+use crate::app::{DebDeckApp, SelfUpdate, SelfUpdatePrimaryAction, SelfUpdateSnapshot};
 
 use super::{actions, body, overlay, title};
 
@@ -17,8 +17,8 @@ use super::{actions, body, overlay, title};
 const MAX_NOTES_HEIGHT: f32 = 280.0;
 
 /// 绘制更新弹窗。
-pub(crate) fn show(app: &mut DebDeckApp, cx: &mut Context<DebDeckApp>) -> AnyElement {
-    let snapshot = app.self_update.snapshot();
+pub(crate) fn show(self_update: &SelfUpdate, cx: &mut Context<DebDeckApp>) -> AnyElement {
+    let snapshot = self_update.snapshot();
     let close = Button::new("close-self-update")
         .label("关闭")
         .ghost()

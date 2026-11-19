@@ -1,9 +1,8 @@
 //! 模态与提示的持有者。
 //!
 //! 一次只允许一个模态：这是界面刻意接受的约束（后台操作串行进行，用户也不需要
-//! 同时看两个进度框）。绘制时把模态取出来、结束再放回（[`Dialogs::take_modal`] /
-//! [`Dialogs::restore_modal`]），是为了绕开「绘制代码要借用 self 的其他字段」，
-//! 而不是随手写的临时状态搬运。
+//! 同时看两个进度框）。绘制期只读取不可变引用 `&ModalState`，由点击回调通过
+//! `cx.listener` 更新状态，避免绘制期间移出再放回模态。
 //!
 //! `refresh_after_operation` 修的是一个真实的丢事件问题：外部 apt/dpkg 改动发生时
 //! 如果正有一个操作在跑，原先的实现直接忽略这次通知，列表会一直停留在旧数据上，
@@ -88,16 +87,6 @@ impl Dialogs {
         {
             token.store(true, Ordering::Relaxed);
             operation.cancel_requested = true;
-        }
-    }
-
-    pub(crate) fn take_modal(&mut self) -> Option<ModalState> {
-        self.modal.take()
-    }
-
-    pub(crate) fn restore_modal(&mut self, modal: Option<ModalState>) {
-        if modal.is_some() {
-            self.modal = modal;
         }
     }
 

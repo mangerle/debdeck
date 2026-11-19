@@ -27,7 +27,7 @@ pub(crate) use catalog::Catalog;
 pub(crate) use dialogs::Dialogs;
 pub(crate) use install::{InstallApp, InstallFile, PasswordUi, Phase};
 pub(crate) use list::ListView;
-pub(crate) use self_update::{SelfUpdatePrimaryAction, SelfUpdateSnapshot};
+pub(crate) use self_update::{SelfUpdate, SelfUpdatePrimaryAction, SelfUpdateSnapshot};
 // UI 层需要的状态类型集中再导出：`state` 本身保持私有，避免绘制代码绕过
 // `app` 的门面去抓内部模块。
 pub(crate) use state::{

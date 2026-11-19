@@ -61,11 +61,11 @@ fn confirm_copy(confirm: &Confirm, paths: &AppPaths) -> ConfirmCopy {
 
 /// 绘制确认框。
 pub(crate) fn show(
-    app: &mut DebDeckApp,
+    paths: &AppPaths,
     confirm: &Confirm,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let copy = confirm_copy(confirm, &app.paths);
+    let copy = confirm_copy(confirm, paths);
     let confirm_value = confirm.clone();
 
     let mut confirm_button = Button::new("confirm-action").label(copy.confirm_label);

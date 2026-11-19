@@ -13,11 +13,7 @@ use crate::util::format_bytes;
 use super::{actions, body, overlay, title};
 
 /// 绘制操作框。
-pub(crate) fn show(
-    _app: &mut DebDeckApp,
-    operation: &Operation,
-    cx: &mut Context<DebDeckApp>,
-) -> AnyElement {
+pub(crate) fn show(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
     let dismissible = operation.result.is_some();
     let card = match &operation.result {
         None => running(operation, cx),

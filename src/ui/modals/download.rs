@@ -8,7 +8,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use crate::app::{DebDeckApp, DownloadDialog, ModalState};
+use crate::app::{Catalog, DebDeckApp, DownloadDialog, ModalState};
 use crate::model::RepoPackage;
 use crate::util::format_bytes;
 
@@ -16,14 +16,14 @@ use super::{actions, body, overlay, title};
 
 /// 绘制下载框。
 pub(crate) fn show(
-    app: &mut DebDeckApp,
+    catalog: &Catalog,
     dialog: &DownloadDialog,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
     if dialog.versions.is_empty() {
         return empty_dialog(cx);
     }
-    let installed = app.catalog.installed_version(&dialog.pkg);
+    let installed = catalog.installed_version(&dialog.pkg);
     let theme = cx.theme();
     let muted = theme.muted_foreground;
     let mono = theme.mono_font_family.clone();

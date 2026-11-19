@@ -12,12 +12,7 @@ use super::{actions, body, overlay, title};
 const MAX_BODY_HEIGHT: f32 = 320.0;
 
 /// 绘制消息框；只有关闭一条出路。
-pub(crate) fn show(
-    _app: &mut DebDeckApp,
-    title_text: &str,
-    message: &str,
-    cx: &mut Context<DebDeckApp>,
-) -> AnyElement {
+pub(crate) fn show(title_text: &str, message: &str, cx: &mut Context<DebDeckApp>) -> AnyElement {
     let close = Button::new("close-message")
         .label("关闭")
         .primary()
