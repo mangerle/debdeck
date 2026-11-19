@@ -15,10 +15,26 @@ use flate2::read::GzDecoder;
 use lz4_flex::frame::FrameDecoder;
 
 use crate::backend::fs_layout::FsLayout;
-use crate::deb822::for_each_stanza;
+use crate::deb822::for_each_filtered_stanza;
 #[cfg(test)]
 use crate::deb822::parse_stanzas;
 use crate::model::{RepoPackage, RepositoryData};
+
+/// APT 索引中界面与下载实际消费的字段白名单；其余字段（Tag/MD5sum 等）流式跳过。
+const INDEX_FIELDS: &[&str] = &[
+    "Package",
+    "Version",
+    "Architecture",
+    "Description",
+    "Maintainer",
+    "Homepage",
+    "Pre-Depends",
+    "Depends",
+    "Installed-Size",
+    "Size",
+    "Filename",
+    "SHA256",
+];
 
 use super::sources::AptSource;
 
@@ -153,7 +169,7 @@ fn parse_index_reader(
     base: &str,
     native_arch: &str,
 ) -> io::Result<()> {
-    for_each_stanza(reader, |stanza| {
+    for_each_filtered_stanza(reader, INDEX_FIELDS, |stanza| {
         parse_stanza_into(repository, &stanza, base, native_arch);
     })
 }
@@ -238,13 +254,26 @@ fn parse_stanza_into(
     base: &str,
     native_arch: &str,
 ) {
+    let arch = stanza
+        .get("Architecture")
+        .and_then(|value| value.lines().next())
+        .map(str::trim)
+        .unwrap_or_default();
+    if arch != native_arch && arch != "all" {
+        return;
+    }
+    let name_empty = stanza
+        .get("Package")
+        .and_then(|value| value.lines().next())
+        .is_none_or(|line| line.trim().is_empty());
+    let version_empty = stanza
+        .get("Version")
+        .and_then(|value| value.lines().next())
+        .is_none_or(|line| line.trim().is_empty());
+    if name_empty || version_empty {
+        return;
+    }
     let mut package = RepoPackage::from_stanza(stanza);
-    if package.metadata.name.is_empty() || package.metadata.version.is_empty() {
-        return;
-    }
-    if package.metadata.arch != native_arch && package.metadata.arch != "all" {
-        return;
-    }
     package.repo_base = base.to_string();
     repository.record(package);
 }

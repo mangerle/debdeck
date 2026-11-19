@@ -43,16 +43,22 @@ impl Stanza {
 
     /// 把所有行用单个空格拼成一行，用于 `Depends` 这类被换行折开的列表字段。
     pub fn get_joined(&self, key: &str) -> String {
-        self.get(key)
-            .map(|value| {
-                value
-                    .lines()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .trim()
-                    .to_string()
-            })
-            .unwrap_or_default()
+        let Some(value) = self.get(key) else {
+            return String::new();
+        };
+        let mut joined = String::with_capacity(value.len());
+        for line in value.lines() {
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(line);
+        }
+        let trimmed = joined.trim();
+        if trimmed.len() == joined.len() {
+            joined
+        } else {
+            trimmed.to_string()
+        }
     }
 
     /// `Description` 去掉缩进后的完整描述（不含摘要行）。
@@ -92,8 +98,9 @@ pub fn parse_stanzas(text: &str) -> Vec<Stanza> {
     let mut stanzas = Vec::with_capacity(stanza_capacity);
     let mut builder = StanzaBuilder::default();
     for raw_line in text.lines() {
-        builder.push_line(raw_line);
-        if let Some(stanza) = builder.take_on_empty_line(raw_line) {
+        let line = raw_line.trim_end_matches('\r');
+        builder.push_line(line, None);
+        if let Some(stanza) = builder.take_on_empty_line(line) {
             stanzas.push(stanza);
         }
     }
@@ -103,17 +110,43 @@ pub fn parse_stanzas(text: &str) -> Vec<Stanza> {
     stanzas
 }
 
-/// 从流中逐段读取 deb822 数据，避免大索引在内存中形成完整字符串副本。
+/// 从流中逐段读取 deb822 数据，复用行缓冲区，避免大索引在内存中形成大量行级分配。
 ///
 /// # Errors
 ///
 /// 底层读取器返回 I/O 错误时立即中止；已经交给回调的段落不受影响。
 pub fn for_each_stanza(reader: impl BufRead, mut on_stanza: impl FnMut(Stanza)) -> io::Result<()> {
+    for_each_stanza_impl(reader, None, &mut on_stanza)
+}
+
+/// 从流中逐段读取 deb822 数据，仅保留 `allowed_keys` 中的字段，其余字段及其续行直接跳过。
+///
+/// # Errors
+///
+/// 底层读取器返回 I/O 错误时立即中止；已经交给回调的段落不受影响。
+pub fn for_each_filtered_stanza(
+    reader: impl BufRead,
+    allowed_keys: &[&str],
+    mut on_stanza: impl FnMut(Stanza),
+) -> io::Result<()> {
+    for_each_stanza_impl(reader, Some(allowed_keys), &mut on_stanza)
+}
+
+fn for_each_stanza_impl(
+    mut reader: impl BufRead,
+    allowed_keys: Option<&[&str]>,
+    on_stanza: &mut dyn FnMut(Stanza),
+) -> io::Result<()> {
     let mut builder = StanzaBuilder::default();
-    for line in reader.lines() {
-        let raw_line = line?;
-        builder.push_line(&raw_line);
-        if let Some(stanza) = builder.take_on_empty_line(&raw_line) {
+    let mut raw_line = String::with_capacity(256);
+    loop {
+        raw_line.clear();
+        if reader.read_line(&mut raw_line)? == 0 {
+            break;
+        }
+        let line = raw_line.trim_end_matches(['\n', '\r']);
+        builder.push_line(line, allowed_keys);
+        if let Some(stanza) = builder.take_on_empty_line(line) {
             on_stanza(stanza);
         }
     }
@@ -138,8 +171,7 @@ impl Default for StanzaBuilder {
 }
 
 impl StanzaBuilder {
-    fn push_line(&mut self, raw_line: &str) {
-        let line = raw_line.trim_end_matches('\r');
+    fn push_line(&mut self, line: &str, allowed_keys: Option<&[&str]>) {
         if line.is_empty() || line.starts_with(' ') || line.starts_with('\t') {
             if let Some(index) = self.last_value
                 && !line.is_empty()
@@ -153,6 +185,14 @@ impl StanzaBuilder {
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim();
             if name.is_empty() {
+                self.last_value = None;
+                return;
+            }
+            if let Some(keys) = allowed_keys
+                && !keys.contains(&name)
+            {
+                // 被过滤的字段及其后续续行整段跳过，避免无效字符串分配。
+                self.last_value = None;
                 return;
             }
             self.fields
@@ -161,12 +201,8 @@ impl StanzaBuilder {
         }
     }
 
-    fn take_on_empty_line(&mut self, raw_line: &str) -> Option<Stanza> {
-        if raw_line.trim_end_matches('\r').is_empty() {
-            self.take()
-        } else {
-            None
-        }
+    fn take_on_empty_line(&mut self, line: &str) -> Option<Stanza> {
+        if line.is_empty() { self.take() } else { None }
     }
 
     fn take(&mut self) -> Option<Stanza> {
@@ -174,8 +210,9 @@ impl StanzaBuilder {
             return None;
         }
         self.last_value = None;
+        let capacity = self.fields.capacity().max(16);
         Some(Stanza {
-            fields: std::mem::take(&mut self.fields),
+            fields: std::mem::replace(&mut self.fields, Vec::with_capacity(capacity)),
         })
     }
 

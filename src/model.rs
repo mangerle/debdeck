@@ -238,10 +238,12 @@ impl RepositoryData {
             return;
         }
         versions.push(package);
-        versions.sort_by(|left, right| {
-            debian_version_cmp(&right.metadata.version, &left.metadata.version)
-                .then_with(|| right.metadata.arch.cmp(&left.metadata.arch))
-        });
+        if versions.len() > 1 {
+            versions.sort_by(|left, right| {
+                debian_version_cmp(&right.metadata.version, &left.metadata.version)
+                    .then_with(|| right.metadata.arch.cmp(&left.metadata.arch))
+            });
+        }
     }
 
     pub fn versions(&self, pkg: &str) -> &[RepoPackage] {
