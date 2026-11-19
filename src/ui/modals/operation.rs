@@ -31,10 +31,16 @@ fn running(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
         .child(title(operation.title.clone()))
         .child(
             h_flex()
+                .w_full()
                 .gap(px(8.0))
-                .items_center()
-                .child(Spinner::new().small())
-                .child(body(operation.message.clone())),
+                .items_start()
+                .child(div().pt(px(2.0)).child(Spinner::new().small()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .child(body(operation.message.clone())),
+                ),
         );
 
     if let Some((received, total)) = operation.progress {
