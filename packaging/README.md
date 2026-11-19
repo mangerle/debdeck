@@ -32,7 +32,7 @@ Install cargo-deb once, then invoke it directly:
 
 ```bash
 cargo install cargo-deb --locked
-cargo deb --locked
+cargo deb --locked --fast --compress-type xz
 ```
 
 The package is written to `target/debian/debdeck_<version>_<architecture>.deb`.
@@ -41,11 +41,15 @@ has already been built, skip the second build explicitly:
 
 ```bash
 cargo build --locked --release
-cargo deb --locked --no-build
+cargo deb --locked --no-build --fast --compress-type xz
 ```
 
 The package version comes from `[package].version`; the Debian revision is
 intentionally empty, so the output is `0.2.0`, not `0.2.0-1`.
+
+Release builds use a size-first profile: `opt-level=z`, fat LTO, one codegen unit,
+symbol stripping, and the default unwind panic strategy so worker panic isolation
+remains effective. Packages use xz fast compression to keep unpack latency low.
 
 ## Dependency policy
 
@@ -118,7 +122,7 @@ when `vX.Y.Z` matches `[package].version`.
 1. Update `[package].version` and `Cargo.lock`.
 2. Add a matching entry at the top of `debian/changelog`.
 3. Update release-facing documentation if behavior changed.
-4. Run formatting, Clippy, tests and a local `cargo deb --locked` build.
+4. Run formatting, Clippy, tests and a local `cargo deb --locked --fast --compress-type xz` build.
 5. Commit and push `main`.
 6. Create and push an annotated `vX.Y.Z` tag.
 7. Confirm that the release workflow published both `.deb` files and `SHA256SUMS`.

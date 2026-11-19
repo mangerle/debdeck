@@ -97,8 +97,9 @@ sudo apt install -y \
 cargo run --release
 ```
 
-The development binary does not need an install step. Release builds strip
-symbols and use thin LTO.
+The development binary does not need an install step. Release builds use
+size-first settings: `opt-level=z`, fat LTO, one codegen unit, symbol stripping,
+and the default unwind panic strategy for worker panic isolation.
 
 ## Create the Debian package
 
@@ -108,7 +109,7 @@ local packaging wrapper**: Cargo and cargo-deb are the packaging interface.
 
 ```bash
 cargo install cargo-deb --locked
-cargo deb --locked
+cargo deb --locked --fast --compress-type xz
 ```
 
 The artifact is written to:
@@ -117,8 +118,8 @@ The artifact is written to:
 target/debian/debdeck_<version>_<architecture>.deb
 ```
 
-Use `cargo deb --locked --no-build` only when a release binary has already been
-built for the selected target. The complete packaging and release process is
+Use `cargo deb --locked --no-build --fast --compress-type xz` only when a release
+binary has already been built for the selected target. The complete packaging and release process is
 documented in [`packaging/README.md`](./packaging/README.md).
 
 ## Release pipeline

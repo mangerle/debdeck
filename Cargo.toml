@@ -38,8 +38,12 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 zbus = "5.19"
 
 [profile.release]
-strip = true
-lto = "thin"
+# 发布包优先控制体积：单 codegen unit、fat LTO、符号裁剪与 z 档优化。
+# 不设置 panic = "abort"，保留 unwind，确保后台线程的 panic 隔离仍然有效。
+opt-level = "z"
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
 
 # 第三方依赖（GPUI/wgpu/字体整形）在开发档也需要优化，避免界面掉帧；
 # 本 crate 保持 -1，避免打断断点调试。

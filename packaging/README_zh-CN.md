@@ -31,7 +31,7 @@ Cargo 元数据。
 
 ```bash
 cargo install cargo-deb --locked
-cargo deb --locked
+cargo deb --locked --fast --compress-type xz
 ```
 
 安装包写入 `target/debian/debdeck_<version>_<architecture>.deb`。`cargo deb` 会自行
@@ -40,11 +40,15 @@ cargo deb --locked
 
 ```bash
 cargo build --locked --release
-cargo deb --locked --no-build
+cargo deb --locked --no-build --fast --compress-type xz
 ```
 
 包版本来自 `[package].version`；Debian 修订号被刻意留空，因此产物版本是 `0.2.0`
 而不是 `0.2.0-1`。
+
+发布构建采用体积优先配置：`opt-level=z`、fat LTO、单 codegen unit、符号裁剪，
+并保留默认 unwind panic 策略，确保后台线程 panic 隔离继续有效。安装包使用
+xz 快速压缩，以降低安装解包延迟。
 
 ## 依赖策略
 
@@ -114,7 +118,7 @@ SHA256SUMS
 1. 更新 `[package].version` 与 `Cargo.lock`。
 2. 在 `debian/changelog` 顶部添加对应记录。
 3. 行为变化时同步更新发布相关文档。
-4. 运行格式检查、Clippy、测试与本地 `cargo deb --locked` 构建。
+4. 运行格式检查、Clippy、测试与本地 `cargo deb --locked --fast --compress-type xz` 构建。
 5. 提交并推送 `main`。
 6. 创建并推送 annotated `vX.Y.Z` 标签。
 7. 确认发布流水线已上传两个 `.deb` 与 `SHA256SUMS`。

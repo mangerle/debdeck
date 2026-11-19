@@ -88,7 +88,9 @@ sudo apt install -y \
 cargo run --release
 ```
 
-开发构建无需安装。Release 构建会剥离符号表并启用 thin LTO。
+开发构建无需安装。Release 构建采用体积优先配置：`opt-level=z`、fat LTO、
+单 codegen unit、符号裁剪，并保留默认 unwind panic 策略，确保后台线程 panic
+隔离继续有效。
 
 ## 构建 Debian 安装包
 
@@ -98,7 +100,7 @@ cargo run --release
 
 ```bash
 cargo install cargo-deb --locked
-cargo deb --locked
+cargo deb --locked --fast --compress-type xz
 ```
 
 产物位于：
@@ -108,7 +110,7 @@ target/debian/debdeck_<version>_<architecture>.deb
 ```
 
 只有在已为选定 target 构建 release 二进制时，才使用
-`cargo deb --locked --no-build`。完整的打包与发布流程见
+`cargo deb --locked --no-build --fast --compress-type xz`。完整的打包与发布流程见
 [`packaging/README_zh-CN.md`](./packaging/README_zh-CN.md)。
 
 ## 发布流水线

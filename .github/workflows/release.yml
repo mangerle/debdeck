@@ -121,7 +121,7 @@ jobs:
         run: cargo install cargo-deb --locked --version 3.8.0
 
       - name: Build Debian package with cargo-deb
-        run: cargo deb --locked --target ${{ matrix.target }}
+        run: cargo deb --locked --fast --compress-type xz --target ${{ matrix.target }}
 
       - name: Validate and stage release artifacts
         shell: bash
