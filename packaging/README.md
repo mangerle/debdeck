@@ -46,7 +46,7 @@ cargo deb --locked --no-build --fast --compress-type xz
 ```
 
 The package version comes from `[package].version`; the Debian revision is
-intentionally empty, so the output is `0.2.0`, not `0.2.0-1`.
+intentionally empty, so the output is `0.2.1`, not `0.2.1-1`.
 
 Release builds use a size-first profile: `opt-level=z`, fat LTO, one codegen unit,
 symbol stripping, and the default unwind panic strategy so worker panic isolation

@@ -1,3 +1,13 @@
+debdeck (0.2.1) unstable; urgency=medium
+
+  * 发布构建改为体积优先配置，启用 z 档优化、fat LTO、单 codegen unit 与符号裁剪。
+  * 保持 unwind panic 策略，确保后台任务 panic 隔离继续有效。
+  * Debian 安装包统一使用 xz 快速压缩，降低安装解包延迟。
+  * 接入基于 shipup 的自更新流程，并增加 Ed25519 清单与安装包签名校验。
+  * 接入 git-cliff 分类发布日志，并完善 GitHub Release 产物与校验流程。
+
+ -- wangle <wangle@agree.com.cn>  Thu, 19 Nov 2026 15:00:00 +0800
+
 debdeck (0.2.0) unstable; urgency=medium
 
   * 按项目工程规范完成全仓整改。

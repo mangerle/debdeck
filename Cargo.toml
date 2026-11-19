@@ -1,6 +1,6 @@
 [package]
 name = "debdeck"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.96"
 authors = ["wangle"]
@@ -82,7 +82,7 @@ items_after_statements = "allow"
 # 不再手抄一份 libxcb-* 列表——那份清单每次换 GPUI/系统库版本都会过期。
 [package.metadata.deb]
 name = "debdeck"
-# 清空 Debian 修订号：产物与 Version 都是 0.2.0，不再出现 0.2.0-1。
+# 清空 Debian 修订号：产物与 Version 都是 0.2.1，不再出现 0.2.1-1。
 # 版本随 Cargo.toml 的 version 单一来源变化，不另设递增计数。
 revision = ""
 maintainer = "wangle <wangle@agree.com.cn>"
