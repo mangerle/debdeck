@@ -21,6 +21,7 @@
 
 mod agent;
 mod controller;
+mod guards;
 mod helper;
 mod process;
 
