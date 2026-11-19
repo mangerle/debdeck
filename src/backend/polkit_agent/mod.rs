@@ -39,8 +39,8 @@ pub(super) const AGENT_PATH: &str = "/org/freedesktop/PolicyKit1/AuthenticationA
 pub(super) const HELPER_SOCKET: &str = "/run/polkit/agent-helper.socket";
 /// 旧版本 polkit 的 setuid helper 路径。
 pub(super) const SETUID_HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
-/// 安装事件队列容量。
-const INSTALL_EVENT_CAPACITY: usize = 64;
+/// 安装事件队列容量（含实时输出行，避免刷屏时撑爆有界队列）。
+const INSTALL_EVENT_CAPACITY: usize = 256;
 /// 用户回执队列容量。界面一次只提交一个密码或取消动作。
 const AUTH_RESPONSE_CAPACITY: usize = 8;
 /// 单次安装会话的总时限，防止 pkexec 或 PAM helper 永久挂起。
@@ -54,6 +54,8 @@ pub enum InstallEvent {
     Prompt(AuthPrompt),
     /// 授权完成，pkexec 正在执行 apt-get。
     Authorized,
+    /// `apt-get` / `dpkg` 的实时标准输出或错误行。
+    Output(String),
     /// 安装结束（成功文本 / 失败详情）。
     Finished(StdResult<String, String>),
 }

@@ -78,8 +78,10 @@ impl PkexecProcess {
         let pid = child.id();
         let stdout = Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
         let stderr = Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
-        let stdout_thread = spawn_output_reader(child.stdout.take(), Arc::clone(&stdout));
-        let stderr_thread = spawn_output_reader(child.stderr.take(), Arc::clone(&stderr));
+        let stdout_thread =
+            spawn_output_reader(child.stdout.take(), Arc::clone(&stdout), events.clone());
+        let stderr_thread =
+            spawn_output_reader(child.stderr.take(), Arc::clone(&stderr), events.clone());
 
         let reaped = Arc::new(AtomicBool::new(false));
         let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -226,13 +228,21 @@ pub(super) fn process_start_time(pid: u32) -> Result<u64> {
 fn spawn_output_reader(
     pipe: Option<impl Read + Send + 'static>,
     buffer: Arc<Mutex<Vec<u8>>>,
+    events: async_channel::Sender<ControllerEvent>,
 ) -> Option<JoinHandle<()>> {
     let mut pipe = pipe?;
-    Some(thread::spawn(move || drain_pipe(&mut pipe, &buffer)))
+    Some(thread::spawn(move || {
+        drain_pipe(&mut pipe, &buffer, &events);
+    }))
 }
 
-fn drain_pipe(pipe: &mut impl Read, buffer: &Arc<Mutex<Vec<u8>>>) {
+fn drain_pipe(
+    pipe: &mut impl Read,
+    buffer: &Arc<Mutex<Vec<u8>>>,
+    events: &async_channel::Sender<ControllerEvent>,
+) {
     let mut chunk = [0_u8; READ_CHUNK];
+    let mut pending = Vec::new();
     loop {
         match pipe.read(&mut chunk) {
             Ok(0) | Err(_) => break,
@@ -241,8 +251,35 @@ fn drain_pipe(pipe: &mut impl Read, buffer: &Arc<Mutex<Vec<u8>>>) {
                     let keep = OUTPUT_LIMIT.saturating_sub(buffer.len()).min(count);
                     buffer.extend_from_slice(&chunk[..keep]);
                 }
+                emit_lines(&mut pending, &chunk[..count], events);
             }
         }
+    }
+    flush_pending(&mut pending, events);
+}
+
+fn emit_lines(
+    pending: &mut Vec<u8>,
+    chunk: &[u8],
+    events: &async_channel::Sender<ControllerEvent>,
+) {
+    for &byte in chunk {
+        if byte == b'\n' || byte == b'\r' {
+            flush_pending(pending, events);
+        } else if pending.len() < 2048 {
+            pending.push(byte);
+        }
+    }
+}
+
+fn flush_pending(pending: &mut Vec<u8>, events: &async_channel::Sender<ControllerEvent>) {
+    if pending.is_empty() {
+        return;
+    }
+    let line = String::from_utf8_lossy(pending).trim().to_string();
+    pending.clear();
+    if !line.is_empty() {
+        let _ = events.try_send(ControllerEvent::ProcessOutput(line));
     }
 }
 
@@ -280,7 +317,8 @@ mod tests {
     fn bounded_reader_drains_without_growing_past_limit() {
         let data = vec![b'x'; OUTPUT_LIMIT.saturating_add(READ_CHUNK)];
         let buffer = Arc::new(Mutex::new(Vec::new()));
-        let handle = spawn_output_reader(Some(Cursor::new(data)), Arc::clone(&buffer));
+        let (tx, _rx) = async_channel::bounded(8);
+        let handle = spawn_output_reader(Some(Cursor::new(data)), Arc::clone(&buffer), tx);
         handle.unwrap().join().unwrap();
         assert_eq!(buffer.lock().unwrap().len(), OUTPUT_LIMIT);
     }

@@ -13,6 +13,8 @@
 
 mod actions;
 mod content;
+pub(crate) mod password_input;
+mod progress;
 mod result;
 
 use std::sync::Arc;
@@ -25,25 +27,25 @@ use gpui_kit::*;
 
 use crate::app::{InstallApp, InstallFile, PasswordUi, Phase};
 use crate::model::DebFile;
+use crate::runtime::install::InstalledStatus;
 use crate::ui::APP_ICON_SIZE;
 use crate::util::APP_NAME;
 
 use actions::{close_actions, confirm_actions, password_actions};
-use content::{PasswordView, confirm, need_password, running};
+use content::{PasswordView, confirm, need_password, running_auth, running_install};
+use progress::step_indicator;
 use result::{failure, success};
 
 /// 标题条高度。
 pub(crate) const HEADER_HEIGHT: f32 = 38.0;
+/// 顶部步骤条高度（含上下内边距）。
+pub(crate) const STEP_BAR_HEIGHT: f32 = 30.0;
 /// 内容区上留白。
 pub(crate) const CONTENT_PADDING: f32 = 12.0;
 /// 按钮栏高度：按钮 32 加底部留白 12。
 pub(crate) const ACTION_BAR_HEIGHT: f32 = 44.0;
-/// 内容之外还要留出的高度。
-///
-/// 一份是滚动条占掉的宽度：内容正好填满可视区时滚动条会冒出来，内容随之变窄、
-/// 文字重新折行、变得更高，于是永远差一点显示不全。另一份是让人喘口气的余量，
-/// 内容不贴着按钮栏。
-pub(crate) const CONTENT_SLACK: f32 = 40.0;
+/// 内容之外还要留出的紧凑余量（避免紧贴按钮栏或因行高/边框误差触发滚动条）。
+pub(crate) const CONTENT_SLACK: f32 = 24.0;
 
 /// 绘制安装窗口。
 pub(crate) fn show(
@@ -55,6 +57,11 @@ pub(crate) fn show(
     let note = app.note().map(str::to_string);
     let file = app.file().clone();
     let phase = app.phase().clone();
+    let step_bar = build_step_bar(&file, &phase, cx);
+    let center_content = matches!(
+        phase,
+        Phase::Authorizing | Phase::Installing | Phase::Done(Ok(_))
+    );
     let title_bar = build_header(&file, app.app_icon(), window, cx);
     let (content, actions) = render_content(
         ContentSpec {
@@ -69,17 +76,61 @@ pub(crate) fn show(
         WindowShell {
             app,
             title_bar,
+            step_bar,
             content,
             actions,
+            center_content,
         },
         cx,
     )
 }
 
+fn build_step_bar(
+    file: &InstallFile,
+    phase: &Phase,
+    cx: &Context<InstallApp>,
+) -> Option<AnyElement> {
+    if !matches!(file, InstallFile::Ready { .. }) {
+        return None;
+    }
+    let active = match phase {
+        Phase::Confirm => 0,
+        Phase::Authorizing | Phase::NeedPassword { .. } => 1,
+        Phase::Installing => 2,
+        Phase::Done(Ok(_)) => 3,
+        Phase::Done(Err(_)) => return None,
+    };
+    Some(
+        div()
+            .px(px(16.0))
+            .pt(px(10.0))
+            .child(step_indicator(active, cx))
+            .into_any_element(),
+    )
+}
+
 fn apply_password_ui(app: &mut InstallApp, window: &mut Window, cx: &mut Context<InstallApp>) {
     if let Some(PasswordUi { clear, focus, mask }) = app.take_password_ui() {
+        let is_secret = mask.unwrap_or(true);
+        app.secret_password().update(cx, |state, cx| {
+            if clear {
+                state.clear(cx);
+            }
+            if focus && is_secret {
+                state.focus(window, cx);
+            }
+        });
         app.password().update(cx, |state, cx| {
-            update_password_state(state, &PasswordUi { clear, focus, mask }, window, cx);
+            update_password_state(
+                state,
+                &PasswordUi {
+                    clear,
+                    focus: focus && !is_secret,
+                    mask,
+                },
+                window,
+                cx,
+            );
         });
     }
 }
@@ -108,7 +159,7 @@ fn build_header(
     cx: &mut Context<InstallApp>,
 ) -> AnyElement {
     let subtitle = match file {
-        InstallFile::Ready(file) => format!("安装 {}", file.metadata.name),
+        InstallFile::Ready { file, .. } => format!("安装 {}", file.metadata.name),
         InstallFile::Inspecting | InstallFile::Failed(_) => "安装软件包".to_string(),
     };
     header(&subtitle, app_icon, window, cx)
@@ -132,11 +183,12 @@ fn render_content(
         note,
     } = spec;
     match file {
-        InstallFile::Inspecting => (inspecting(cx), Some(close_actions(cx))),
-        InstallFile::Ready(file) => render_phase(
+        InstallFile::Inspecting => (inspecting(cx), Some(close_actions(app, cx))),
+        InstallFile::Ready { file, installed } => render_phase(
             PhaseSpec {
                 app,
                 file,
+                installed,
                 phase,
                 note,
             },
@@ -144,7 +196,7 @@ fn render_content(
         ),
         InstallFile::Failed(error) => (
             failure("无法安装安装包", "文件预检未通过。", error, cx),
-            Some(close_actions(cx)),
+            Some(close_actions(app, cx)),
         ),
     }
 }
@@ -169,6 +221,7 @@ fn inspecting(cx: &Context<InstallApp>) -> AnyElement {
 struct PhaseSpec<'a> {
     app: &'a mut InstallApp,
     file: &'a DebFile,
+    installed: &'a InstalledStatus,
     phase: Phase,
     note: Option<&'a str>,
 }
@@ -180,12 +233,13 @@ fn render_phase(
     let PhaseSpec {
         app,
         file,
+        installed,
         phase,
         note,
     } = spec;
     match phase {
-        Phase::Confirm => (confirm(file, cx), Some(confirm_actions(app, cx))),
-        Phase::Authorizing => (running(file, "正在请求管理员授权…", note, cx), None),
+        Phase::Confirm => (confirm(file, installed, cx), Some(confirm_actions(app, cx))),
+        Phase::Authorizing => (running_auth(file, "正在请求管理员授权…", note, cx), None),
         Phase::NeedPassword {
             message,
             prompt,
@@ -204,11 +258,17 @@ fn render_phase(
                 Some(password_actions(cx)),
             )
         }
-        Phase::Installing => (running(file, "授权成功，正在安装软件包…", note, cx), None),
-        Phase::Done(Ok(message)) => (success(file, &message, cx), Some(close_actions(cx))),
+        Phase::Installing => (running_install(app, file, note, cx), None),
+        Phase::Done(Ok(message)) => {
+            let has_launcher = app.launch_entry().is_some();
+            (
+                success(file, &message, has_launcher, cx),
+                Some(close_actions(app, cx)),
+            )
+        }
         Phase::Done(Err(error)) => (
             failure("安装失败", "安装包未能写入系统。", &error, cx),
-            Some(close_actions(cx)),
+            Some(close_actions(app, cx)),
         ),
     }
 }
@@ -216,23 +276,32 @@ fn render_phase(
 struct WindowShell<'a> {
     app: &'a InstallApp,
     title_bar: AnyElement,
+    step_bar: Option<AnyElement>,
     content: AnyElement,
     actions: Option<AnyElement>,
+    center_content: bool,
 }
 
 fn window_shell(shell: WindowShell<'_>, cx: &mut Context<InstallApp>) -> AnyElement {
     let WindowShell {
         app,
         title_bar,
+        step_bar,
         content,
         actions,
+        center_content,
     } = shell;
+    let mut inner = v_flex().w_full().child(content);
+    if center_content {
+        inner = inner.min_h_full().justify_center().pb(px(CONTENT_PADDING));
+    }
     v_flex()
         .id("install-window")
         .size_full()
         .bg(cx.theme().background)
         .text_color(cx.theme().foreground)
         .child(title_bar)
+        .children(step_bar)
         .child(
             div()
                 .id("install-content-scroll")
@@ -242,7 +311,7 @@ fn window_shell(shell: WindowShell<'_>, cx: &mut Context<InstallApp>) -> AnyElem
                 .track_scroll(&app.content_handle)
                 .px(px(16.0))
                 .pt(px(CONTENT_PADDING))
-                .child(content),
+                .child(inner),
         )
         .children(actions.map(|actions| div().px(px(16.0)).pb(px(CONTENT_PADDING)).child(actions)))
         .into_any_element()

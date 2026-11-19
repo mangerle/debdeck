@@ -152,9 +152,9 @@ fn install_window_options() -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
             point(px(160.0), px(120.0)),
-            size(px(520.0), px(360.0)),
+            size(px(540.0), px(410.0)),
         ))),
-        window_min_size: Some(size(px(460.0), px(install::MIN_WINDOW_HEIGHT))),
+        window_min_size: Some(size(px(480.0), px(install::MIN_WINDOW_HEIGHT))),
         app_id: Some(APP_ID.to_string()),
         icon: window_icon(),
         window_decorations: Some(WindowDecorations::Client),

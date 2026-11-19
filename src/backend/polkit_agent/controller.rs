@@ -23,14 +23,15 @@ use super::helper::{HelperEvent, HelperSession};
 use super::process::{PkexecProcess, ProcessExit, process_start_time};
 use super::{AuthPrompt, AuthResponse, INSTALL_TIMEOUT, InstallEvent};
 
-/// 控制器统一事件总线容量：涵盖 D-Bus 授权、PAM 提示、UI 回执与进程退出。
-const CONTROLLER_EVENT_CAPACITY: usize = 64;
+/// 控制器统一事件总线容量：涵盖 D-Bus 授权、PAM 提示、实时输出、UI 回执与进程退出。
+const CONTROLLER_EVENT_CAPACITY: usize = 256;
 
 /// 汇聚到控制器的所有异步事件源。
 pub(super) enum ControllerEvent {
     Auth(AuthRequest),
     Helper(HelperEvent),
     Response(AuthResponse),
+    ProcessOutput(String),
     ProcessExited(BackendResult<ProcessExit>),
     Timeout,
     Stop,
@@ -214,6 +215,10 @@ impl Controller<'_> {
                 true
             }
             ControllerEvent::Response(response) => self.handle_response(process, response),
+            ControllerEvent::ProcessOutput(line) => {
+                let _ = self.events.try_send(InstallEvent::Output(line));
+                true
+            }
             ControllerEvent::ProcessExited(exit) => {
                 process.mark_finished();
                 match exit {

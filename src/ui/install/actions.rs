@@ -7,9 +7,10 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::*;
 
-use crate::app::InstallApp;
+use crate::app::{InstallApp, InstallFile};
+use crate::runtime::install::InstalledStatus;
 
-/// 确认页的按钮。
+/// 确认页的按钮（根据本机已安装状态动态调整主按钮文案）。
 pub(super) fn confirm_actions(app: &InstallApp, cx: &mut Context<InstallApp>) -> AnyElement {
     let running_flag = app.running();
     let cancel = Button::new("install-cancel")
@@ -22,8 +23,17 @@ pub(super) fn confirm_actions(app: &InstallApp, cx: &mut Context<InstallApp>) ->
                 cx.quit();
             }
         }));
+    let label = match app.file() {
+        InstallFile::Ready { installed, .. } => match installed {
+            InstalledStatus::NotInstalled | InstalledStatus::OtherVersion { .. } => "安装",
+            InstalledStatus::SameVersion => "重新安装",
+            InstalledStatus::Upgrade { .. } => "升级",
+            InstalledStatus::Downgrade { .. } => "降级安装",
+        },
+        _ => "安装",
+    };
     let install = Button::new("install-start")
-        .label("安装")
+        .label(label)
         .compact()
         .primary()
         .on_click(cx.listener(|this, _, _, cx| this.start(cx)));
@@ -47,8 +57,22 @@ pub(super) fn password_actions(cx: &mut Context<InstallApp>) -> AnyElement {
     action_bar().child(cancel).child(submit).into_any_element()
 }
 
-/// 结束后的按钮。
-pub(super) fn close_actions(cx: &mut Context<InstallApp>) -> AnyElement {
+/// 结束后的按钮：成功且存在桌面入口时提供「立即启动」主按钮。
+pub(super) fn close_actions(app: &InstallApp, cx: &mut Context<InstallApp>) -> AnyElement {
+    if app.launch_entry().is_some() {
+        let close = Button::new("install-close")
+            .label("关闭")
+            .compact()
+            .ghost()
+            .on_click(cx.listener(|_, _, _, cx| cx.quit()));
+        let launch = Button::new("install-launch")
+            .label("立即启动")
+            .compact()
+            .primary()
+            .on_click(cx.listener(|this, _, _, cx| this.launch_app(cx)));
+        return action_bar().child(close).child(launch).into_any_element();
+    }
+
     let close = Button::new("install-close")
         .label("关闭")
         .compact()

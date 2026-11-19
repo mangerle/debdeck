@@ -11,9 +11,22 @@ use crate::model::DebFile;
 use super::actions::icon_tile;
 
 /// 成功：结果说明。
-pub(super) fn success(file: &DebFile, message: &str, cx: &mut Context<InstallApp>) -> AnyElement {
+pub(super) fn success(
+    file: &DebFile,
+    message: &str,
+    has_launcher: bool,
+    cx: &mut Context<InstallApp>,
+) -> AnyElement {
     let success = cx.theme().success;
     let muted = cx.theme().muted_foreground;
+    let launch_hint = if has_launcher {
+        format!(
+            "{} 已就绪，可直接点击下方「立即启动」，或从应用菜单打开。",
+            file.metadata.name
+        )
+    } else {
+        format!("{} 现在可以从应用菜单或终端启动。", file.metadata.name)
+    };
     v_flex()
         .w_full()
         .items_center()
@@ -37,7 +50,9 @@ pub(super) fn success(file: &DebFile, message: &str, cx: &mut Context<InstallApp
             div()
                 .text_xs()
                 .text_color(muted)
-                .child(format!("{} 现在可以从应用菜单启动。", file.metadata.name)),
+                .text_center()
+                .whitespace_normal()
+                .child(launch_hint),
         )
         .into_any_element()
 }
