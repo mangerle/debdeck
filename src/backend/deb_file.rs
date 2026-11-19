@@ -216,7 +216,7 @@ mod tests {
 
         assert_eq!(info.metadata.name, "debdeck-test");
         assert_eq!(info.metadata.version, "1.2.3-1");
-        assert_eq!(info.metadata.arch, "all");
+        assert_eq!(info.metadata.arch.as_ref(), "all");
         assert_eq!(info.metadata.summary, "test package");
         assert!(info.file_size > 0);
         assert!(info.path.is_absolute());

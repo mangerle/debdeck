@@ -157,7 +157,7 @@ impl DebDeckApp {
             .installed_version(&pkg)
             .and_then(|(version, arch)| {
                 versions.iter().position(|package| {
-                    package.metadata.version == version && package.metadata.arch == arch
+                    package.metadata.version == version && package.metadata.arch.as_ref() == arch
                 })
             })
             .unwrap_or(0);

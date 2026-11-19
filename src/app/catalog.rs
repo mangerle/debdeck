@@ -244,7 +244,7 @@ impl Catalog {
             .map(|package| {
                 (
                     package.metadata.version.clone(),
-                    package.metadata.arch.clone(),
+                    package.metadata.arch.to_string(),
                 )
             })
     }
@@ -288,7 +288,7 @@ mod tests {
             metadata: PackageMetadata {
                 name: name.to_string(),
                 version: version.to_string(),
-                arch: "amd64".to_string(),
+                arch: crate::model::intern_arch("amd64"),
                 summary: "s".to_string(),
                 ..Default::default()
             },
@@ -351,7 +351,7 @@ mod tests {
             metadata: PackageMetadata {
                 name: "demo".to_string(),
                 version: "2.0".to_string(),
-                arch: "amd64".to_string(),
+                arch: crate::model::intern_arch("amd64"),
                 ..Default::default()
             },
             ..Default::default()

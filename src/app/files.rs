@@ -112,7 +112,7 @@ impl DetailFilesState {
 
         let revision = catalog.revision();
         let pkg = pkg_name.to_string();
-        let arch = package.metadata.arch.clone();
+        let arch = package.metadata.arch.to_string();
 
         let Some((loaded_rev, loaded_pkg, loaded_list)) = self.loaded.as_ref() else {
             self.clear_view();

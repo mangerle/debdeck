@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use crate::deb822::Stanza;
@@ -19,18 +19,54 @@ pub struct DebFile {
     pub file_size: u64,
 }
 
+/// 驻留常见 Debian 架构名，避免 7 万+ 软件包重复为 `"amd64"` / `"all"` 等短串分配堆内存。
+pub fn intern_arch(arch: &str) -> Arc<str> {
+    static EMPTY: OnceLock<Arc<str>> = OnceLock::new();
+    static AMD64: OnceLock<Arc<str>> = OnceLock::new();
+    static ALL: OnceLock<Arc<str>> = OnceLock::new();
+    static I386: OnceLock<Arc<str>> = OnceLock::new();
+    static ARM64: OnceLock<Arc<str>> = OnceLock::new();
+    static ARMHF: OnceLock<Arc<str>> = OnceLock::new();
+
+    match arch {
+        "" => Arc::clone(EMPTY.get_or_init(|| Arc::from(""))),
+        "amd64" => Arc::clone(AMD64.get_or_init(|| Arc::from("amd64"))),
+        "all" => Arc::clone(ALL.get_or_init(|| Arc::from("all"))),
+        "i386" => Arc::clone(I386.get_or_init(|| Arc::from("i386"))),
+        "arm64" => Arc::clone(ARM64.get_or_init(|| Arc::from("arm64"))),
+        "armhf" => Arc::clone(ARMHF.get_or_init(|| Arc::from("armhf"))),
+        other => Arc::from(other),
+    }
+}
+
 /// 软件包的控制元数据，字段名与 deb822 控制字段一一对应。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PackageMetadata {
     pub name: String,
     pub version: String,
-    pub arch: String,
+    pub arch: Arc<str>,
     pub summary: String,
     pub description: String,
     pub maintainer: String,
     pub homepage: String,
     pub depends: String,
     pub installed_size_kb: u64,
+}
+
+impl Default for PackageMetadata {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: String::new(),
+            arch: intern_arch(""),
+            summary: String::new(),
+            description: String::new(),
+            maintainer: String::new(),
+            homepage: String::new(),
+            depends: String::new(),
+            installed_size_kb: 0,
+        }
+    }
 }
 
 impl PackageMetadata {
@@ -48,10 +84,14 @@ impl PackageMetadata {
             (false, true) => pre_depends,
             _ => depends,
         };
+        let arch = stanza
+            .get("Architecture")
+            .and_then(|value| value.lines().next())
+            .map_or("", str::trim);
         Self {
             name: stanza.get_first_line("Package"),
             version: stanza.get_first_line("Version"),
-            arch: stanza.get_first_line("Architecture"),
+            arch: intern_arch(arch),
             summary: stanza.summary(),
             description: stanza.description(),
             maintainer: stanza.get_first_line("Maintainer"),
@@ -302,5 +342,12 @@ mod tests {
         assert_eq!(metadata.homepage, "https://example.com");
         // 折行被拼成一行，且 Pre-Depends 排在 Depends 之前。
         assert_eq!(metadata.depends, "libc6, libgcc-s1, zlib1g");
+    }
+
+    #[test]
+    fn intern_arch_shares_allocation_for_common_arches() {
+        assert!(Arc::ptr_eq(&intern_arch("amd64"), &intern_arch("amd64")));
+        assert!(Arc::ptr_eq(&intern_arch("all"), &intern_arch("all")));
+        assert_eq!(intern_arch("riscv64").as_ref(), "riscv64");
     }
 }

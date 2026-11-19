@@ -198,7 +198,7 @@ fn fallback_value(key: &str, metadata: &PackageMetadata, installed_size_kb: u64)
     match key {
         "Package" => metadata.name.clone(),
         "Version" => metadata.version.clone(),
-        "Architecture" => metadata.arch.clone(),
+        "Architecture" => metadata.arch.to_string(),
         "Maintainer" => {
             if metadata.maintainer.is_empty() {
                 "Unknown Maintainer <unknown@localhost>".to_string()

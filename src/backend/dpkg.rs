@@ -383,8 +383,8 @@ mod tests {
         let data = load_installed(&layout, &mut |_| {}).unwrap();
         let instances = data.instances("libc6");
         assert_eq!(instances.len(), 2);
-        assert_eq!(instances[0].metadata.arch, "amd64");
-        assert_eq!(instances[1].metadata.arch, "i386");
+        assert_eq!(instances[0].metadata.arch.as_ref(), "amd64");
+        assert_eq!(instances[1].metadata.arch.as_ref(), "i386");
 
         let _ = fs::remove_dir_all(&root);
     }

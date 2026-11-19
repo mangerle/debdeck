@@ -9,6 +9,8 @@ mod package;
 mod repository;
 
 pub use catalog_builder::{AppEntry, build_entries, has_update};
+#[cfg(test)]
+pub use package::intern_arch;
 pub use package::{
     DebFile, DesktopEntry, DpkgState, InstalledData, InstalledPackage, MenuEntryState,
     PackageMetadata, RepoPackage,

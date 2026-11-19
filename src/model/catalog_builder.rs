@@ -137,7 +137,7 @@ mod tests {
         PackageMetadata {
             name: name.to_string(),
             version: version.to_string(),
-            arch: "amd64".to_string(),
+            arch: crate::model::intern_arch("amd64"),
             summary: "summary".to_string(),
             ..Default::default()
         }

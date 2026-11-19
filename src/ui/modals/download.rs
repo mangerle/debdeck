@@ -228,7 +228,7 @@ fn dialog_actions(dialog: &DownloadDialog, cx: &mut Context<DebDeckApp>) -> AnyE
 /// 下拉项文字：`版本 (架构) · 大小 · 已安装`。
 fn choice_label(package: &RepoPackage, installed: Option<&(String, String)>) -> String {
     let is_installed = installed.is_some_and(|(version, arch)| {
-        *version == package.metadata.version && *arch == package.metadata.arch
+        *version == package.metadata.version && arch == package.metadata.arch.as_ref()
     });
     let size = if package.download_size > 0 {
         format!(" · {}", format_bytes(package.download_size))
@@ -254,7 +254,7 @@ mod tests {
             metadata: PackageMetadata {
                 name: name.to_string(),
                 version: version.to_string(),
-                arch: arch.to_string(),
+                arch: crate::model::intern_arch(arch),
                 ..Default::default()
             },
             download_size: size,

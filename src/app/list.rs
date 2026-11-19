@@ -306,7 +306,7 @@ mod tests {
                 metadata: PackageMetadata {
                     name: name.to_string(),
                     version: "1".to_string(),
-                    arch: "amd64".to_string(),
+                    arch: crate::model::intern_arch("amd64"),
                     ..Default::default()
                 },
                 dpkg: DpkgState::parse("install ok installed"),
