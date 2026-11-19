@@ -306,6 +306,10 @@ fn run_privileged_job(spec: PrivilegedJobSpec, worker: &Worker) {
     );
 
     let mut throttle = Throttle::new(PROGRESS_INTERVAL);
+    sink.send(BackendEvent::OperationSessionStarted {
+        id,
+        responder: session.responses.clone(),
+    });
     while let Ok(event) = session.events.recv_blocking() {
         match event {
             InstallEvent::Notice(message) => {
@@ -316,11 +320,7 @@ fn run_privileged_job(spec: PrivilegedJobSpec, worker: &Worker) {
                 });
             }
             InstallEvent::Prompt(prompt) => {
-                sink.send(BackendEvent::OperationAuthPrompt {
-                    id,
-                    prompt,
-                    responder: session.responses.clone(),
-                });
+                sink.send(BackendEvent::OperationAuthPrompt { id, prompt });
             }
             InstallEvent::Authorized => {
                 sink.send(BackendEvent::OperationAuthorized { id });

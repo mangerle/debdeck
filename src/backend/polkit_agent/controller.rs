@@ -213,7 +213,7 @@ impl Controller<'_> {
     ) {
         while let Ok(event) = ctrl_rx.recv_blocking() {
             if self.stop.load(Ordering::Relaxed) {
-                self.abort(process, "已取消安装。");
+                self.abort(process, "已取消操作。");
                 return;
             }
             if !self.dispatch_event(process, event) {
@@ -249,7 +249,7 @@ impl Controller<'_> {
                 false
             }
             ControllerEvent::Stop => {
-                self.abort(process, "已取消安装。");
+                self.abort(process, "已取消操作。");
                 false
             }
         }
@@ -382,7 +382,7 @@ impl Controller<'_> {
                 }
                 resolve_auth(&mut self.pending_auth, AuthOutcome::Cancelled);
                 process.terminate();
-                send_finished(&self.events, Err("已取消安装。".to_string()));
+                send_finished(&self.events, Err("已取消操作。".to_string()));
                 false
             }
         }

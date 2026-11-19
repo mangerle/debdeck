@@ -108,9 +108,8 @@ fn running(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
     }
 
     let cancel = operation
-        .cancel
-        .as_ref()
-        .map(|_| cancel_button(operation, cx));
+        .is_cancellable()
+        .then(|| cancel_button(operation, cx));
     if operation.cancel_requested {
         card = card.child(div().text_xs().text_color(muted).child("正在取消，请稍候…"));
     }

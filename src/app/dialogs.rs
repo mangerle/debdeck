@@ -80,19 +80,20 @@ impl Dialogs {
         self.modal = Some(ModalState::Operation(operation));
     }
 
-    /// 请求取消当前可取消的操作或内嵌认证会话。
+    /// 请求取消当前可取消的操作或内嵌提权会话（授权前后均可取消）。
     pub(crate) fn request_cancel(&mut self) {
-        if let Some(ModalState::Operation(operation)) = &mut self.modal {
-            if let Some(token) = &operation.cancel {
-                token.store(true, Ordering::Relaxed);
-                operation.cancel_requested = true;
-            }
-            if let Some(responder) = operation.auth_responder.take() {
-                let _ = responder.try_send(AuthResponse::Cancel);
-                operation.auth_prompt = None;
-                operation.cancel_requested = true;
-                operation.message = "正在取消管理员授权…".to_string();
-            }
+        let Some(ModalState::Operation(operation)) = &mut self.modal else {
+            return;
+        };
+        if let Some(token) = &operation.cancel {
+            token.store(true, Ordering::Relaxed);
+            operation.cancel_requested = true;
+        }
+        if let Some(responder) = &operation.auth_responder {
+            let _ = responder.try_send(AuthResponse::Cancel);
+            operation.auth_prompt = None;
+            operation.cancel_requested = true;
+            operation.message = "正在取消操作…".to_string();
         }
     }
 
@@ -113,42 +114,55 @@ impl Dialogs {
         false
     }
 
+    /// 记录提权会话的回执通道，使授权前后都能取消。
+    pub(crate) fn record_operation_session(
+        &mut self,
+        id: OperationId,
+        responder: async_channel::Sender<AuthResponse>,
+    ) {
+        if let Some(ModalState::Operation(operation)) = &mut self.modal
+            && operation.id == id
+        {
+            operation.auth_responder = Some(responder);
+        }
+    }
+
     /// 记录操作弹窗的管理员认证提示。返回是否命中当前操作。
     pub(crate) fn record_operation_auth_prompt(
         &mut self,
         id: OperationId,
         prompt: AuthPrompt,
-        responder: async_channel::Sender<AuthResponse>,
     ) -> bool {
         if let Some(ModalState::Operation(operation)) = &mut self.modal
             && operation.id == id
         {
             operation.auth_prompt = Some(prompt);
-            operation.auth_responder = Some(responder);
             return true;
         }
         false
     }
 
-    /// 认证通过，切回执行进度态。
+    /// 认证通过，切回执行进度态（保留回执通道以便执行中取消）。
     pub(crate) fn record_operation_authorized(&mut self, id: OperationId) -> bool {
         if let Some(ModalState::Operation(operation)) = &mut self.modal
             && operation.id == id
         {
             operation.auth_prompt = None;
-            operation.auth_responder = None;
             operation.message = "已授权，正在执行…".to_string();
             return true;
         }
         false
     }
 
-    /// 提交当前操作弹窗内输入的管理员密码。
+    /// 提交当前操作弹窗内输入的管理员密码。仅在存在认证提示时生效。
     pub(crate) fn submit_operation_password(&mut self, text: String) -> bool {
         let Some(ModalState::Operation(operation)) = &mut self.modal else {
             return false;
         };
-        let Some(responder) = operation.auth_responder.take() else {
+        if operation.auth_prompt.is_none() {
+            return false;
+        }
+        let Some(responder) = &operation.auth_responder else {
             return false;
         };
         let _ = responder.try_send(AuthResponse::Input(text));

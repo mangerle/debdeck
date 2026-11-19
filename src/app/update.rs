@@ -47,16 +47,12 @@ impl DebDeckApp {
                 self.dialogs
                     .record_operation_progress(id, message, progress);
             }
-            BackendEvent::OperationAuthPrompt {
-                id,
-                prompt,
-                responder,
-            } => {
+            BackendEvent::OperationSessionStarted { id, responder } => {
+                self.dialogs.record_operation_session(id, responder);
+            }
+            BackendEvent::OperationAuthPrompt { id, prompt } => {
                 let echo = prompt.echo;
-                if self
-                    .dialogs
-                    .record_operation_auth_prompt(id, prompt, responder)
-                {
+                if self.dialogs.record_operation_auth_prompt(id, prompt) {
                     self.reset_and_focus_operation_password(echo, cx);
                 }
             }

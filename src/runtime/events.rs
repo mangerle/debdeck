@@ -94,11 +94,15 @@ pub enum BackendEvent {
         message: String,
         progress: Option<(u64, u64)>,
     },
+    /// 提权会话已建立：界面据此持有回执通道，使授权前后都能取消操作。
+    OperationSessionStarted {
+        id: OperationId,
+        responder: async_channel::Sender<AuthResponse>,
+    },
     /// 提权操作等待内嵌 polkit 密码/用户输入。
     OperationAuthPrompt {
         id: OperationId,
         prompt: AuthPrompt,
-        responder: async_channel::Sender<AuthResponse>,
     },
     /// 管理员授权已通过，命令正在执行。
     OperationAuthorized {

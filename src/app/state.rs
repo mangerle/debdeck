@@ -249,6 +249,11 @@ impl Operation {
     pub(crate) fn is_running(&self) -> bool {
         self.result.is_none()
     }
+
+    /// 是否可取消：带取消令牌的任务，或已建立提权会话（授权前后均可中止）。
+    pub(crate) fn is_cancellable(&self) -> bool {
+        self.cancel.is_some() || self.auth_responder.is_some()
+    }
 }
 
 /// 界面能发起的动作。
