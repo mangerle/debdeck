@@ -1,6 +1,7 @@
 //! 将已安装软件包与软件源数据合并为界面列表条目。
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::util::{build_search_text, debian_version_cmp};
@@ -19,17 +20,17 @@ use super::repository::RepositoryData;
 )]
 #[derive(Clone, Debug)]
 pub struct AppEntry {
-    pub pkg: String,
-    pub display_name: String,
+    pub pkg: Arc<str>,
+    pub display_name: Arc<str>,
     pub is_installed: bool,
     pub is_gui: bool,
     pub is_held: bool,
     pub has_update: bool,
     pub installed_size_kb: u64,
     pub updated: Option<SystemTime>,
-    pub latest_version: Option<String>,
-    pub search_text: String,
-    pub sort_name: String,
+    pub latest_version: Option<Arc<str>>,
+    pub search_text: Arc<str>,
+    pub sort_name: Arc<str>,
 }
 
 /// 合并已安装与软件源数据，生成稳定排序的应用列表。
@@ -66,19 +67,20 @@ fn build_entry(
     let installed_meta = installed_pkg.map(|pkg| &pkg.metadata);
     let latest = repository.latest(name).map(|package| &package.metadata);
     let desktop = installed_pkg.and_then(|pkg| pkg.desktop.as_ref());
+    let pkg = Arc::<str>::from(name);
     let display_name = desktop
-        .map(|desktop| desktop.name.clone())
+        .map(|desktop| desktop.name.as_str())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| name.to_string());
+        .map_or_else(|| Arc::clone(&pkg), Arc::from);
     let summary = entry_summary(desktop, installed_meta, latest);
-    let (search_text, sort_name) = build_search_text(&display_name, name, &summary);
+    let (search_text, sort_name) = build_search_text(&display_name, name, summary);
     let has_update = has_update(installed_meta, latest, upgradable);
     let installed_size_kb = installed_meta
         .map(|metadata| metadata.installed_size_kb)
         .or_else(|| latest.map(|metadata| metadata.installed_size_kb))
         .unwrap_or(0);
     AppEntry {
-        pkg: name.to_string(),
+        pkg,
         display_name,
         is_installed: installed_pkg.is_some(),
         is_gui: desktop.is_some(),
@@ -86,26 +88,26 @@ fn build_entry(
         has_update,
         installed_size_kb,
         updated: installed_pkg.and_then(|pkg| pkg.updated),
-        latest_version: latest.map(|metadata| metadata.version.clone()),
-        search_text,
-        sort_name,
+        latest_version: latest.map(|metadata| Arc::<str>::from(metadata.version.as_str())),
+        search_text: Arc::from(search_text),
+        sort_name: Arc::from(sort_name),
     }
 }
 
-fn entry_summary(
-    desktop: Option<&DesktopEntry>,
-    installed: Option<&PackageMetadata>,
-    latest: Option<&PackageMetadata>,
-) -> String {
+fn entry_summary<'a>(
+    desktop: Option<&'a DesktopEntry>,
+    installed: Option<&'a PackageMetadata>,
+    latest: Option<&'a PackageMetadata>,
+) -> &'a str {
     desktop
-        .map(|desktop| desktop.comment.clone())
+        .map(|desktop| desktop.comment.as_str())
         .filter(|comment| !comment.is_empty())
         .or_else(|| {
             installed
-                .map(|metadata| metadata.summary.clone())
+                .map(|metadata| metadata.summary.as_str())
                 .filter(|summary| !summary.is_empty())
         })
-        .or_else(|| latest.map(|metadata| metadata.summary.clone()))
+        .or_else(|| latest.map(|metadata| metadata.summary.as_str()))
         .unwrap_or_default()
 }
 
@@ -172,10 +174,16 @@ mod tests {
 
         let entries = build_entries(&installed, &repository, None);
         assert_eq!(entries.len(), 2);
-        let hello = entries.iter().find(|entry| entry.pkg == "hello").unwrap();
+        let hello = entries
+            .iter()
+            .find(|entry| entry.pkg.as_ref() == "hello")
+            .unwrap();
         assert!(hello.is_installed);
         assert!(hello.has_update);
-        let world = entries.iter().find(|entry| entry.pkg == "world").unwrap();
+        let world = entries
+            .iter()
+            .find(|entry| entry.pkg.as_ref() == "world")
+            .unwrap();
         assert!(!world.is_installed);
     }
 }

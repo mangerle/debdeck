@@ -23,7 +23,8 @@ pub(crate) struct Catalog {
     upgradable_degraded: bool,
     entries: Arc<[AppEntry]>,
     /// 包名 → `entries` 下标。
-    index: HashMap<String, usize>,
+    /// 包名键与条目的 `Arc<str>` 共享存储，重建索引时不再复制 7 万份名称。
+    index: HashMap<Arc<str>, usize>,
     counts: Counts,
     /// 每次重建条目表自增一次。
     revision: usize,
@@ -126,7 +127,7 @@ impl Catalog {
             .entries
             .iter()
             .enumerate()
-            .map(|(position, entry)| (entry.pkg.clone(), position))
+            .map(|(position, entry)| (Arc::clone(&entry.pkg), position))
             .collect();
 
         self.counts = compute_counts(&self.entries);
@@ -141,9 +142,11 @@ impl Catalog {
             return;
         };
 
-        let mut updated = self.entries.to_vec();
+        // 无界面快照引用时直接原地修改；存在快照时仅复制轻量结构，
+        // 所有文本字段共享 `Arc<str>`，不会再产生逐条字符串堆分配。
+        let entries = Arc::make_mut(&mut self.entries);
         let mut upgradable_count = 0usize;
-        for entry in &mut updated {
+        for entry in entries.iter_mut() {
             let installed_meta = installed.primary(&entry.pkg).map(|pkg| &pkg.metadata);
             let latest_meta = repository.latest(&entry.pkg).map(|pkg| &pkg.metadata);
             entry.has_update =
@@ -152,7 +155,6 @@ impl Catalog {
                 upgradable_count += 1;
             }
         }
-        self.entries = Arc::from(updated);
         self.counts.upgradable = upgradable_count;
         self.revision += 1;
     }
@@ -365,6 +367,15 @@ mod tests {
         assert!(catalog.entry("demo").unwrap().has_update);
         assert_eq!(catalog.counts().upgradable, 1);
 
+        let before = catalog.entries_arc();
+        let shared_text = [
+            Arc::clone(&before[0].pkg),
+            Arc::clone(&before[0].display_name),
+            Arc::clone(before[0].latest_version.as_ref().unwrap()),
+            Arc::clone(&before[0].search_text),
+            Arc::clone(&before[0].sort_name),
+        ];
+
         let rev_before = catalog.revision();
         // 权威集合到达且不包含 demo（例如已被 hold），增量更新应将其标记为 false。
         assert!(
@@ -375,5 +386,17 @@ mod tests {
         assert_eq!(catalog.revision(), rev_before + 1);
         assert!(!catalog.entry("demo").unwrap().has_update);
         assert_eq!(catalog.counts().upgradable, 0);
+
+        let after = catalog.entries_arc();
+        let after_text = [
+            &after[0].pkg,
+            &after[0].display_name,
+            after[0].latest_version.as_ref().unwrap(),
+            &after[0].search_text,
+            &after[0].sort_name,
+        ];
+        for (before, after) in shared_text.iter().zip(after_text) {
+            assert!(Arc::ptr_eq(before, after), "增量刷新不应重新分配条目文本");
+        }
     }
 }

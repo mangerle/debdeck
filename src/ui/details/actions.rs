@@ -69,7 +69,7 @@ fn open_button(
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
     let desktop = context.desktop.cloned();
-    let name = context.entry.display_name.clone();
+    let name = context.entry.display_name.to_string();
     let tooltip = if !availability.installed {
         "应用尚未安装"
     } else if !availability.has_desktop {
@@ -130,8 +130,8 @@ fn upgrade_button(context: &DetailContext, cx: &mut Context<DebDeckApp>) -> Opti
     if !context.entry.has_update {
         return None;
     }
-    let pkg = context.entry.pkg.clone();
-    let name = context.entry.display_name.clone();
+    let pkg = context.entry.pkg.to_string();
+    let name = context.entry.display_name.to_string();
     let held = context.entry.is_held;
     let tooltip = if held {
         "已保持版本，请先取消保持后再更新"
@@ -162,8 +162,8 @@ fn uninstall_button(
     availability: ActionAvailability,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let pkg = context.entry.pkg.clone();
-    let name = context.entry.display_name.clone();
+    let pkg = context.entry.pkg.to_string();
+    let name = context.entry.display_name.to_string();
     Button::new("uninstall-app")
         .label("卸载")
         .secondary()
@@ -190,8 +190,8 @@ fn hold_button(
     availability: ActionAvailability,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let pkg = context.entry.pkg.clone();
-    let name = context.entry.display_name.clone();
+    let pkg = context.entry.pkg.to_string();
+    let name = context.entry.display_name.to_string();
     let held = context.entry.is_held;
     let label = if held {
         "取消保持版本"
@@ -225,8 +225,8 @@ fn download_button(
     availability: ActionAvailability,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let pkg = context.entry.pkg.clone();
-    let name = context.entry.display_name.clone();
+    let pkg = context.entry.pkg.to_string();
+    let name = context.entry.display_name.to_string();
     let tooltip = if availability.downloadable {
         "选择版本并下载安装包"
     } else if availability.repository_loading {
@@ -256,8 +256,8 @@ fn build_button(
     availability: ActionAvailability,
     cx: &mut Context<DebDeckApp>,
 ) -> AnyElement {
-    let pkg = context.entry.pkg.clone();
-    let name = context.entry.display_name.clone();
+    let pkg = context.entry.pkg.to_string();
+    let name = context.entry.display_name.to_string();
     Button::new("build-app")
         .label("离线提取安装包")
         .secondary()
@@ -282,8 +282,8 @@ fn build_button(
 fn menu_button(context: &DetailContext, cx: &mut Context<DebDeckApp>) -> Option<AnyElement> {
     let desktop = context.desktop?;
     let (label, tooltip, hidden, enabled) = menu_action(desktop.menu_state);
-    let pkg = context.entry.pkg.clone();
-    let name = context.entry.display_name.clone();
+    let pkg = context.entry.pkg.to_string();
+    let name = context.entry.display_name.to_string();
     let path = desktop.path.clone();
     Some(
         Button::new("toggle-menu-visibility")

@@ -141,11 +141,12 @@ pub(crate) fn installation_summary(entry: &AppEntry) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn entry(installed: bool, held: bool) -> AppEntry {
         AppEntry {
-            pkg: "demo".to_string(),
-            display_name: "Demo".to_string(),
+            pkg: Arc::from("demo"),
+            display_name: Arc::from("Demo"),
             is_installed: installed,
             is_gui: false,
             is_held: installed && held,
@@ -153,8 +154,8 @@ mod tests {
             installed_size_kb: 0,
             updated: None,
             latest_version: None,
-            search_text: String::new(),
-            sort_name: "demo".to_string(),
+            search_text: Arc::from(""),
+            sort_name: Arc::from("demo"),
         }
     }
 

@@ -205,7 +205,7 @@ pub(crate) fn download_source<'a>(context: &DetailContext<'a>) -> Option<&'a Rep
 pub(crate) fn version_text(context: &DetailContext, info: &PackageMetadata) -> String {
     let entry = &context.entry;
     match (&entry.latest_version, entry.has_update) {
-        (Some(latest), true) if *latest != info.version => {
+        (Some(latest), true) if latest.as_ref() != info.version => {
             format!("{}（最新 {latest}）", info.version)
         }
         _ => info.version.clone(),

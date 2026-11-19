@@ -69,7 +69,7 @@ fn render_app_rows(state: &AppListRows, range: Range<usize>, cx: &mut App) -> Ve
             app_row(ListRowSpec {
                 entry,
                 index,
-                selected: state.selected.as_deref() == Some(entry.pkg.as_str()),
+                selected: state.selected.as_deref() == Some(entry.pkg.as_ref()),
                 entity: state.entity.clone(),
                 theme,
             })
@@ -88,7 +88,7 @@ struct ListRowSpec<'a> {
 fn app_row(spec: ListRowSpec<'_>) -> AnyElement {
     let status = RowStatus::of(spec.entry);
     let badge_color = status_color(spec.theme, status);
-    let pkg = spec.entry.pkg.clone();
+    let pkg = spec.entry.pkg.to_string();
     let hover = spec.theme.list_hover;
     let active = spec.theme.list_active;
     let mut row = h_flex()
@@ -161,14 +161,14 @@ fn name_cell(entry: &AppEntry, foreground: Hsla, muted: Hsla) -> AnyElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(foreground)
                 .truncate()
-                .child(entry.display_name.clone()),
+                .child(entry.display_name.to_string()),
         )
         .child(
             div()
                 .text_xs()
                 .text_color(muted)
                 .truncate()
-                .child(entry.pkg.clone()),
+                .child(entry.pkg.to_string()),
         )
         .into_any_element()
 }

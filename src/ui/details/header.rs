@@ -61,14 +61,14 @@ fn header_identity(entry: &AppEntry, muted: Hsla) -> AnyElement {
                 .text_xl()
                 .font_weight(FontWeight::SEMIBOLD)
                 .truncate()
-                .child(entry.display_name.clone()),
+                .child(entry.display_name.to_string()),
         )
         .child(
             div()
                 .text_sm()
                 .text_color(muted)
                 .truncate()
-                .child(entry.pkg.clone()),
+                .child(entry.pkg.to_string()),
         )
         .into_any_element()
 }

@@ -114,7 +114,7 @@ impl ListView {
             let first = self
                 .visible
                 .first()
-                .map(|&index| entries[index].pkg.clone());
+                .map(|&index| entries[index].pkg.to_string());
             self.select(first);
         }
         true
@@ -172,7 +172,7 @@ fn compare_entries(
 fn visible_contains(visible: &[usize], entries: &[AppEntry], pkg: &str) -> bool {
     visible
         .iter()
-        .any(|&index| entries[index].pkg.as_str() == pkg)
+        .any(|&index| entries[index].pkg.as_ref() == pkg)
 }
 
 /// 列表筛选与排序参数。
@@ -209,8 +209,8 @@ mod tests {
 
     fn entry(pkg: &str, installed: bool, gui: bool, size: u64) -> AppEntry {
         AppEntry {
-            pkg: pkg.to_string(),
-            display_name: pkg.to_string(),
+            pkg: Arc::from(pkg),
+            display_name: Arc::from(pkg),
             is_installed: installed,
             is_gui: gui,
             is_held: false,
@@ -218,8 +218,8 @@ mod tests {
             installed_size_kb: size,
             updated: None,
             latest_version: None,
-            search_text: pkg.to_string(),
-            sort_name: pkg.to_string(),
+            search_text: Arc::from(pkg),
+            sort_name: Arc::from(pkg),
         }
     }
 
