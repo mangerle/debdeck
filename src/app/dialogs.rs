@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 use super::state::{ModalState, Operation};
 use crate::runtime::{AuthPrompt, AuthResponse, OperationId};
 
+/// 单个操作弹窗保留的最大日志行数。上限防止长时间运行的高频输出无限占用内存。
+const MAX_OPERATION_LOG_LINES: usize = 500;
+
 /// 自动消失的轻提示。
 pub(crate) struct Toast {
     pub(crate) text: String,
@@ -189,6 +192,27 @@ impl Dialogs {
         }
     }
 
+    /// 追加一条提权命令输出；只保留最近的日志，避免长任务耗尽内存。
+    pub(crate) fn record_operation_output(&mut self, id: OperationId, line: String) -> bool {
+        if let Some(ModalState::Operation(operation)) = &mut self.modal
+            && operation.id == id
+        {
+            if operation.logs.len() == MAX_OPERATION_LOG_LINES {
+                operation.logs.remove(0);
+            }
+            operation.logs.push(line);
+            return true;
+        }
+        false
+    }
+
+    /// 切换当前操作日志抽屉的展开状态。
+    pub(crate) fn toggle_operation_logs(&mut self) {
+        if let Some(ModalState::Operation(operation)) = &mut self.modal {
+            operation.logs_expanded = !operation.logs_expanded;
+        }
+    }
+
     /// 操作进行中收到外部变更通知：先记账。
     pub(crate) fn note_external_change(&mut self) -> bool {
         if self.is_operation_running() {
@@ -249,6 +273,23 @@ mod tests {
         };
         assert_eq!(operation.message, "进行中");
         assert!(operation.progress.is_none());
+    }
+
+    #[test]
+    fn operation_logs_keep_latest_lines_within_limit() {
+        let mut dialogs = Dialogs::new();
+        dialogs.begin_operation(running_operation());
+
+        for index in 0..(MAX_OPERATION_LOG_LINES + 3) {
+            assert!(dialogs.record_operation_output(OperationId(7), format!("第 {index} 行")));
+        }
+
+        let Some(ModalState::Operation(operation)) = &dialogs.modal else {
+            panic!("操作弹窗应仍然存在");
+        };
+        assert_eq!(operation.logs.len(), MAX_OPERATION_LOG_LINES);
+        assert_eq!(operation.logs.first().map(String::as_str), Some("第 3 行"));
+        assert_eq!(operation.logs.last().map(String::as_str), Some("第 502 行"));
     }
 
     #[test]

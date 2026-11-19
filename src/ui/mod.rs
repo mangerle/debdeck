@@ -12,6 +12,7 @@ pub mod app_list;
 pub mod details;
 pub mod icons;
 pub mod install;
+pub(crate) mod log_view;
 pub mod modals;
 pub mod notices;
 pub mod password_input;

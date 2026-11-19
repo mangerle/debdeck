@@ -202,6 +202,10 @@ pub(crate) struct Operation {
     pub(crate) id: OperationId,
     pub(crate) title: String,
     pub(crate) message: String,
+    /// 当前操作保留的实时执行日志，按产生顺序排列。
+    pub(crate) logs: Vec<String>,
+    /// 日志抽屉是否展开。保持为独立状态，避免重绘时丢失用户选择。
+    pub(crate) logs_expanded: bool,
     pub(crate) progress: Option<(u64, u64)>,
     pub(crate) result: Option<Result<String, String>>,
     pub(crate) cancel: Option<CancelToken>,
@@ -221,6 +225,8 @@ impl Operation {
             id,
             title: title.into(),
             message: message.into(),
+            logs: Vec::with_capacity(32),
+            logs_expanded: false,
             progress: None,
             result: None,
             cancel: None,

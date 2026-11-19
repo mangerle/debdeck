@@ -1,10 +1,11 @@
 //! 安装窗口的流程步骤条、阶段进度条与实时日志面板。
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::*;
 
 use crate::app::InstallApp;
+use crate::ui::log_view;
 
 /// 三步流程指示条：确认 → 授权 → 安装。
 ///
@@ -76,12 +77,6 @@ pub(super) fn log_drawer(
     expanded: bool,
     cx: &mut Context<InstallApp>,
 ) -> AnyElement {
-    let theme = cx.theme();
-    let muted = theme.muted_foreground;
-    let bg = theme.muted;
-    let border = theme.border;
-    let mono = theme.mono_font_family.clone();
-
     let toggle_label = if expanded {
         "收起安装详情 ▴"
     } else if logs.is_empty() {
@@ -96,54 +91,12 @@ pub(super) fn log_drawer(
         .ghost()
         .on_click(cx.listener(|this, _, _, cx| this.toggle_logs(cx)));
 
-    let mut container = v_flex().w_full().items_center().gap(px(6.0)).child(toggle);
-    if expanded {
-        container = container.child(log_viewport(logs, muted, bg, border, mono));
-    }
-    container.into_any_element()
-}
-
-fn log_viewport(
-    logs: &[String],
-    muted: Hsla,
-    bg: Hsla,
-    border: Hsla,
-    mono: SharedString,
-) -> AnyElement {
-    let mut box_div = div()
-        .id("install-live-logs")
-        .w_full()
-        .min_h(px(72.0))
-        .max_h(px(140.0))
-        .overflow_y_scroll()
-        .p(px(8.0))
-        .rounded(px(8.0))
-        .bg(bg)
-        .border_1()
-        .border_color(border);
-
-    if logs.is_empty() {
-        box_div = box_div.child(
-            div()
-                .text_xs()
-                .font_family(mono)
-                .text_color(muted)
-                .child("正在等待输出…"),
-        );
-    } else {
-        let mut lines = v_flex().w_full().gap(px(2.0));
-        for line in logs {
-            lines = lines.child(
-                div()
-                    .text_xs()
-                    .font_family(mono.clone())
-                    .text_color(muted)
-                    .whitespace_normal()
-                    .child(line.clone()),
-            );
-        }
-        box_div = box_div.child(lines);
-    }
-
-    box_div.into_any_element()
+    log_view::drawer(
+        toggle,
+        logs,
+        expanded,
+        "install-live-logs",
+        "正在等待输出…",
+        cx.theme(),
+    )
 }

@@ -47,6 +47,9 @@ impl DebDeckApp {
                 self.dialogs
                     .record_operation_progress(id, message, progress);
             }
+            BackendEvent::OperationOutput { id, line } => {
+                self.dialogs.record_operation_output(id, line);
+            }
             BackendEvent::OperationSessionStarted { id, responder } => {
                 self.dialogs.record_operation_session(id, responder);
             }

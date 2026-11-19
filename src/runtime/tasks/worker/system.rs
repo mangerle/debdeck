@@ -229,14 +229,10 @@ fn run_privileged_job(spec: PrivilegedJobSpec, worker: &Worker) {
             InstallEvent::Authorized => {
                 sink.send(BackendEvent::OperationAuthorized { id });
             }
-            // apt 输出是低频文本行，且界面只保留最新一行；不节流才能保证
-            // 静默期之前的最后一行不被丢弃而让弹窗停留在过期文案上。
+            // apt 输出是低频文本行；日志列表负责保留完整过程，不节流可以避免
+            // 静默期之前的最后一行被时间窗口吞掉。
             InstallEvent::Output(line) => {
-                sink.send(BackendEvent::OperationProgress {
-                    id,
-                    message: line,
-                    progress: None,
-                });
+                sink.send(BackendEvent::OperationOutput { id, line });
             }
             InstallEvent::Finished(result) => {
                 sink.send(BackendEvent::OperationFinished {

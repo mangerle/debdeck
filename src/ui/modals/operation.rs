@@ -9,6 +9,7 @@ use gpui_kit::*;
 
 use crate::app::{DebDeckApp, Operation};
 use crate::runtime::AuthPrompt;
+use crate::ui::log_view;
 use crate::ui::password_input::PasswordInputState;
 use crate::util::format_bytes;
 
@@ -107,6 +108,8 @@ fn running(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
         card = card.child(progress_block(received, total, cx));
     }
 
+    card = card.children(operation_log_drawer(operation, cx));
+
     let cancel = operation
         .is_cancellable()
         .then(|| cancel_button(operation, cx));
@@ -115,6 +118,38 @@ fn running(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
     }
 
     card.child(actions().children(cancel)).into_any_element()
+}
+
+/// 操作执行日志抽屉。默认收起，日志积累后显示行数，展开后共用安装窗口的日志视图。
+fn operation_log_drawer(operation: &Operation, cx: &mut Context<DebDeckApp>) -> Option<AnyElement> {
+    if operation.logs.is_empty() && !operation.logs_expanded {
+        return None;
+    }
+
+    let label = if operation.logs_expanded {
+        "收起执行日志 ▴".to_string()
+    } else if operation.logs.is_empty() {
+        "查看执行日志 ▾".to_string()
+    } else {
+        format!("查看执行日志（{} 行）▾", operation.logs.len())
+    };
+    let toggle = Button::new("toggle-operation-logs")
+        .label(label)
+        .compact()
+        .ghost()
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.dialogs.toggle_operation_logs();
+            cx.notify();
+        }));
+
+    Some(log_view::drawer(
+        toggle,
+        &operation.logs,
+        operation.logs_expanded,
+        "operation-live-logs",
+        "正在等待命令输出…",
+        cx.theme(),
+    ))
 }
 
 fn cancel_button(operation: &Operation, cx: &mut Context<DebDeckApp>) -> AnyElement {
@@ -185,6 +220,7 @@ fn success(operation: &Operation, message: &str, cx: &mut Context<DebDeckApp>) -
                 .child("操作完成"),
         )
         .child(body(message.to_string()))
+        .children(operation_log_drawer(operation, cx))
         .child(
             actions().children(open).child(
                 Button::new("close-operation")
@@ -218,6 +254,7 @@ fn failure(operation: &Operation, error: &str, cx: &mut Context<DebDeckApp>) -> 
                 .overflow_y_scroll()
                 .child(body(error.to_string())),
         )
+        .children(operation_log_drawer(operation, cx))
         .child(
             actions().child(
                 Button::new("close-failed-operation")

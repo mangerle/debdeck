@@ -94,6 +94,12 @@ pub enum BackendEvent {
         message: String,
         progress: Option<(u64, u64)>,
     },
+    /// 提权命令的实时输出行。与阶段进度分开，界面既可保留完整日志，
+    /// 又不会把下载百分比等高频进度误记为日志。
+    OperationOutput {
+        id: OperationId,
+        line: String,
+    },
     /// 提权会话已建立：界面据此持有回执通道，使授权前后都能取消操作。
     OperationSessionStarted {
         id: OperationId,
