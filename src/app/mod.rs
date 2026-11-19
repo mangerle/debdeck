@@ -45,9 +45,11 @@ use gpui_kit::component::select::{SearchableVec, SelectState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::runtime::{BackendEvent, InstanceLock, TaskManager, Waker, notify};
+use crate::runtime::{
+    BackendEvent, InstanceLock, RecoveryStatus, TaskManager, Waker, check_and_recover_on_startup,
+    notify, restart_current_process,
+};
 use crate::ui::{APP_ICON_SIZE, DETAIL_ICON_TEXTURE_SIZE, window_icon};
-use crate::update::{RecoveryStatus, check_and_recover_on_startup, restart_current_process};
 use crate::util::{APP_ID, APP_NAME, AppPaths};
 
 mod refresh_action {

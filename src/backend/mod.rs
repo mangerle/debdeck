@@ -35,6 +35,7 @@ pub mod fs_layout;
 pub mod polkit_agent;
 pub mod privileged;
 pub mod repack;
+pub(crate) mod self_update;
 pub mod shell;
 
 pub(crate) use error::{BackendError, Result};

@@ -11,6 +11,10 @@ mod instance;
 mod tasks;
 mod watcher;
 
+pub(crate) use crate::backend::self_update::{
+    DownloadedUpdate, RecoveryStatus, UpdateInfo, check_and_recover_on_startup,
+    restart_current_process,
+};
 pub(crate) use desktop::{launch_desktop, notify, open_directory, set_menu_visibility};
 pub(crate) use events::{BackendEvent, CatalogUpdate, OperationId, UpgradableReport, Waker};
 pub use instance::InstanceLock;

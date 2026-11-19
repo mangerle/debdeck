@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use async_channel::{Receiver, Sender, TrySendError};
 
+use crate::backend::self_update::{DownloadedUpdate, UpdateInfo};
 use crate::model::{InstalledData, RepositoryData};
-use crate::update::{DownloadedUpdate, UpdateInfo};
 
 /// 请求标识，用于把进度与结果路由回当前那个操作对话框。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

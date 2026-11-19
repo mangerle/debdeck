@@ -10,12 +10,12 @@ use async_channel::Receiver;
 
 use crate::backend::desktop::load_icon_bgra;
 use crate::backend::fs_layout::FsLayout;
+use crate::backend::self_update::{
+    DownloadedUpdate, UpdateEvent, UpdateInfo, UpdateStage, check_update, confirm_update_success,
+};
 use crate::backend::{apt, download, dpkg, privileged, repack, shell};
 use crate::runtime::events::{
     BackendEvent, CatalogUpdate, EventSink, OperationId, UpgradableReport, report_error,
-};
-use crate::update::{
-    DownloadedUpdate, UpdateEvent, UpdateInfo, UpdateStage, check_update, confirm_update_success,
 };
 use crate::util::{Throttle, current_arch, format_bytes};
 

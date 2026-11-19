@@ -16,8 +16,7 @@ use std::sync::atomic::Ordering;
 
 use gpui_kit::Context;
 
-use crate::runtime::{BackendEvent, TaskSubmitError};
-use crate::update::{DownloadedUpdate, UpdateInfo};
+use crate::runtime::{BackendEvent, DownloadedUpdate, TaskSubmitError, UpdateInfo};
 
 use super::state::{DebDeckApp, ModalState};
 

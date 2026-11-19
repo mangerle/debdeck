@@ -28,10 +28,10 @@ use std::thread::JoinHandle;
 use async_channel::{Sender, TrySendError};
 
 use crate::backend::fs_layout::FsLayout;
+use crate::backend::self_update::{DownloadedUpdate, UpdateInfo};
 use crate::model::InstalledPackage;
 use crate::runtime::events::{EVENT_QUEUE_CAPACITY, EventReceiver, EventSink, OperationId, Waker};
 use crate::runtime::watcher::Watcher;
-use crate::update::{DownloadedUpdate, UpdateInfo};
 
 mod worker;
 
