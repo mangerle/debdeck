@@ -8,7 +8,7 @@ mod catalog_builder;
 mod package;
 mod repository;
 
-pub use catalog_builder::{AppEntry, build_entries};
+pub use catalog_builder::{AppEntry, build_entries, has_update};
 pub use package::{
     DebFile, DesktopEntry, DpkgState, InstalledData, InstalledPackage, MenuEntryState,
     PackageMetadata, RepoPackage,

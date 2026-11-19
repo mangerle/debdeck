@@ -113,7 +113,7 @@ fn entry_summary(
 ///
 /// 两者语义有差异（apt 不把已保持版本的包算作可升级），因此 upgradable 存在时
 /// 完全忽略回退分支，避免同一个列表里混用两套规则。
-fn has_update(
+pub fn has_update(
     installed: Option<&PackageMetadata>,
     latest: Option<&PackageMetadata>,
     upgradable: Option<&HashSet<String>>,

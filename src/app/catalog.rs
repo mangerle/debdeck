@@ -51,14 +51,15 @@ impl Catalog {
 
     /// 应用一次后端更新。返回是否改变了条目表。
     pub(crate) fn apply(&mut self, update: CatalogUpdate) -> bool {
-        let mut changed = false;
+        let mut structural_changed = false;
+        let mut upgradable_changed = false;
 
         if let Some(result) = update.installed {
             match result {
                 Ok(data) => {
                     self.installed = Some(data);
                     self.load = LoadState::Ready;
-                    changed = true;
+                    structural_changed = true;
                 }
                 Err(error) => {
                     self.load = LoadState::Failed {
@@ -72,7 +73,7 @@ impl Catalog {
         if let Some(repository) = update.repository {
             self.repository = Some(repository);
             self.repository_loading = false;
-            changed = true;
+            structural_changed = true;
         }
 
         if let Some(report) = update.upgradable {
@@ -88,13 +89,18 @@ impl Catalog {
                     self.upgradable_degraded = true;
                 }
             }
-            changed = true;
+            upgradable_changed = true;
         }
 
-        if changed {
+        if structural_changed {
             self.rebuild();
+            return true;
         }
-        changed
+        if upgradable_changed && self.installed.is_some() {
+            self.refresh_upgradable_flags();
+            return true;
+        }
+        false
     }
 
     /// 阶段提示只在加载期间生效，就绪后不该再改标题。
@@ -123,17 +129,31 @@ impl Catalog {
             .map(|(position, entry)| (entry.pkg.clone(), position))
             .collect();
 
-        self.counts = Counts {
-            total: self.entries.len(),
-            installed: self
-                .entries
-                .iter()
-                .filter(|entry| entry.is_installed)
-                .count(),
-            gui: self.entries.iter().filter(|entry| entry.is_gui).count(),
-            held: self.entries.iter().filter(|entry| entry.is_held).count(),
-            upgradable: self.entries.iter().filter(|entry| entry.has_update).count(),
+        self.counts = compute_counts(&self.entries);
+        self.revision += 1;
+    }
+
+    /// 仅更新可升级标记与计数，避免全量重建 7 万条搜索索引与拼音键。
+    fn refresh_upgradable_flags(&mut self) {
+        let empty_repository = RepositoryData::default();
+        let repository = self.repository.as_ref().unwrap_or(&empty_repository);
+        let Some(installed) = self.installed.as_ref() else {
+            return;
         };
+
+        let mut updated = self.entries.to_vec();
+        let mut upgradable_count = 0usize;
+        for entry in &mut updated {
+            let installed_meta = installed.primary(&entry.pkg).map(|pkg| &pkg.metadata);
+            let latest_meta = repository.latest(&entry.pkg).map(|pkg| &pkg.metadata);
+            entry.has_update =
+                crate::model::has_update(installed_meta, latest_meta, self.upgradable.as_ref());
+            if entry.has_update {
+                upgradable_count += 1;
+            }
+        }
+        self.entries = Arc::from(updated);
+        self.counts.upgradable = upgradable_count;
         self.revision += 1;
     }
 
@@ -235,6 +255,28 @@ impl Catalog {
     }
 }
 
+fn compute_counts(entries: &[AppEntry]) -> Counts {
+    let mut counts = Counts {
+        total: entries.len(),
+        ..Counts::default()
+    };
+    for entry in entries {
+        if entry.is_installed {
+            counts.installed += 1;
+        }
+        if entry.is_gui {
+            counts.gui += 1;
+        }
+        if entry.is_held {
+            counts.held += 1;
+        }
+        if entry.has_update {
+            counts.upgradable += 1;
+        }
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +341,39 @@ mod tests {
         );
         assert!(!catalog.upgradable_degraded());
         assert_eq!(catalog.counts().total, 0, "还没有已安装数据时不应有条目");
+    }
+
+    #[test]
+    fn incremental_upgradable_update_refreshes_flags_and_counts() {
+        let mut catalog = Catalog::new();
+        let mut repo = RepositoryData::default();
+        repo.record(RepoPackage {
+            metadata: PackageMetadata {
+                name: "demo".to_string(),
+                version: "2.0".to_string(),
+                arch: "amd64".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        catalog.apply(
+            CatalogUpdate::default()
+                .installed(Ok(installed_with("demo", "1.0")))
+                .repository(repo),
+        );
+        // 尚无 upgradable 集合时，退回本地版本比较：1.0 < 2.0 -> true。
+        assert!(catalog.entry("demo").unwrap().has_update);
+        assert_eq!(catalog.counts().upgradable, 1);
+
+        let rev_before = catalog.revision();
+        // 权威集合到达且不包含 demo（例如已被 hold），增量更新应将其标记为 false。
+        assert!(
+            catalog.apply(
+                CatalogUpdate::default().upgradable(UpgradableReport::Queried(HashSet::new()))
+            )
+        );
+        assert_eq!(catalog.revision(), rev_before + 1);
+        assert!(!catalog.entry("demo").unwrap().has_update);
+        assert_eq!(catalog.counts().upgradable, 0);
     }
 }
