@@ -26,7 +26,9 @@ impl DebDeckApp {
         match event {
             BackendEvent::Stage(stage) => self.catalog.set_stage(stage),
             BackendEvent::CatalogUpdated(update) => {
-                self.catalog.apply(update);
+                if self.catalog.apply(update) {
+                    self.sync_catalog_view();
+                }
             }
             BackendEvent::DpkgChanged => {
                 // 只有已安装数据就绪后才需要响应；操作进行中则由 Dialogs 记账。

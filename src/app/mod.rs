@@ -285,6 +285,14 @@ fn sort_select_state(
     )
 }
 
+fn update_sort_from_select(app: &mut DebDeckApp, state: &SortSelect, cx: &mut Context<DebDeckApp>) {
+    let Some(label) = state.read(cx).selected_value().copied() else {
+        return;
+    };
+    let (sort, ascending) = sort_from_label(label);
+    app.set_sort(sort, ascending, cx);
+}
+
 fn observe_inputs(
     search_input: &Entity<InputState>,
     files_input: &Entity<InputState>,
@@ -295,34 +303,14 @@ fn observe_inputs(
         update_sort_from_select(app, &state, cx);
     })
     .detach();
-    observe_text_input(search_input, |this| &mut this.list.search, cx);
-    observe_text_input(files_input, |this| &mut this.list.files_query, cx);
-}
-
-fn update_sort_from_select(app: &mut DebDeckApp, state: &SortSelect, cx: &mut Context<DebDeckApp>) {
-    let Some(label) = state.read(cx).selected_value().copied() else {
-        return;
-    };
-    let (sort, ascending) = sort_from_label(label);
-    if app.list.sort != sort || app.list.ascending != ascending {
-        app.list.sort = sort;
-        app.list.ascending = ascending;
-        cx.notify();
-    }
-}
-
-fn observe_text_input(
-    input: &Entity<InputState>,
-    field: fn(&mut DebDeckApp) -> &mut String,
-    cx: &mut Context<DebDeckApp>,
-) {
-    cx.observe(input, move |this, state, cx| {
+    cx.observe(search_input, |this, state, cx| {
         let value = state.read(cx).value().to_string();
-        let target = field(this);
-        if *target != value {
-            *target = value;
-            cx.notify();
-        }
+        this.set_search(value, cx);
+    })
+    .detach();
+    cx.observe(files_input, |this, state, cx| {
+        let value = state.read(cx).value().to_string();
+        this.set_files_query(value, cx);
     })
     .detach();
 }
@@ -368,6 +356,7 @@ impl DebDeckApp {
             entries_revision: 0,
             visible: Arc::new(Vec::new()),
             selected_pkg: None,
+            clear_files_input: false,
             files: Arc::new(Vec::new()),
             files_key: None,
             files_total: 0,
@@ -388,9 +377,11 @@ impl DebDeckApp {
         app
     }
 
-    /// 重算可见行与快照。Catalog 条目只在版本变化时复制一次；搜索/排序只
-    /// 复制下标的 `Vec<usize>`，不会把 7 万条行的字符串整表克隆。
-    fn ensure_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 在状态变更路径重算可见行与快照，不在渲染函数里做状态突变。
+    ///
+    /// Catalog 条目只在版本变化时复制；搜索/排序只更新可见下标快照，不会把 7 万条
+    /// 行的字符串整表克隆。
+    pub(crate) fn sync_catalog_view(&mut self) {
         let recomputed = self.list.ensure_current(&self.catalog);
         let revision = self.catalog.revision();
         if self.entries_revision != revision {
@@ -401,15 +392,73 @@ impl DebDeckApp {
             self.visible = Arc::new(self.list.visible().to_vec());
         }
 
-        let selection_changed = self.selected_pkg != self.list.selected;
-        if selection_changed {
+        if self.selected_pkg != self.list.selected {
             self.selected_pkg = self.list.selected.clone();
             self.files_key = None;
-            self.files_input
-                .update(cx, |state, cx| state.set_value("", window, cx));
+            self.clear_files_input = true;
         }
         self.ensure_files();
         self.ensure_selected_icon();
+    }
+
+    pub(crate) fn set_filter(
+        &mut self,
+        filter: Filter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.list.filter == filter {
+            return;
+        }
+        self.list.filter = filter;
+        self.sync_catalog_view();
+        self.flush_clear_files_input(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_search(&mut self, search: String, cx: &mut Context<Self>) {
+        if self.list.search == search {
+            return;
+        }
+        self.list.search = search;
+        self.sync_catalog_view();
+        cx.notify();
+    }
+
+    pub(crate) fn set_sort(&mut self, sort: SortKey, ascending: bool, cx: &mut Context<Self>) {
+        if self.list.sort == sort && self.list.ascending == ascending {
+            return;
+        }
+        self.list.sort = sort;
+        self.list.ascending = ascending;
+        self.sync_catalog_view();
+        cx.notify();
+    }
+
+    pub(crate) fn set_files_query(&mut self, query: String, cx: &mut Context<Self>) {
+        if self.list.files_query == query {
+            return;
+        }
+        self.list.files_query = query;
+        self.ensure_files();
+        cx.notify();
+    }
+
+    pub(crate) fn clear_files_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.list.files_query.clear();
+        self.clear_files_input = false;
+        self.files_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.ensure_files();
+        cx.notify();
+    }
+
+    fn flush_clear_files_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.clear_files_input {
+            self.clear_files_input = false;
+            self.files_input
+                .update(cx, |state, cx| state.set_value("", window, cx));
+        }
     }
 
     /// 为当前选中项预请求图标后台解码；渲染期只读取缓存结果。
@@ -477,8 +526,10 @@ impl DebDeckApp {
         self.list.select(pkg);
         self.selected_pkg = self.list.selected.clone();
         self.files_key = None;
+        self.clear_files_input = false;
         self.files_input
             .update(cx, |state, cx| state.set_value("", window, cx));
+        self.ensure_files();
         self.ensure_selected_icon();
         cx.notify();
     }
@@ -504,7 +555,7 @@ impl DebDeckApp {
 
 impl Render for DebDeckApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_ui(window, cx);
+        self.flush_clear_files_input(window, cx);
 
         let content = if self.catalog.is_ready() {
             crate::ui::show(self, window, cx).into_any_element()

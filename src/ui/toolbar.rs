@@ -120,8 +120,7 @@ fn filter_button(value: Filter, current: Filter, cx: &mut Context<DebDeckApp>) -
         .custom(variant)
         .selected(active)
         .tooltip(value.hint())
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.list.filter = value;
-            cx.notify();
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.set_filter(value, window, cx);
         }))
 }

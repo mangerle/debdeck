@@ -351,6 +351,8 @@ pub(crate) struct DebDeckApp {
     pub(crate) visible: Arc<Vec<usize>>,
     /// 快照对应的选中项，用来判断是否需要清理文件过滤。
     pub(crate) selected_pkg: Option<String>,
+    /// 选中项在无窗口上下文中发生变化时，延后到下次绘制同步清空文件输入框。
+    pub(crate) clear_files_input: bool,
     /// 当前详情页的文件快照（已按过滤词筛选）。
     pub(crate) files: Arc<Vec<SharedString>>,
     /// 文件快照的凭据：`(Catalog 版本, 包名, 过滤词)`。

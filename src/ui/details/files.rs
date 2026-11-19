@@ -79,10 +79,7 @@ fn clear_filter_button(cx: &mut Context<DebDeckApp>) -> AnyElement {
         .compact()
         .ghost()
         .on_click(cx.listener(|this, _, window, cx| {
-            this.files_input
-                .update(cx, |state, cx| state.set_value("", window, cx));
-            this.list.files_query.clear();
-            cx.notify();
+            this.clear_files_query(window, cx);
         }))
         .into_any_element()
 }
