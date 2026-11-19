@@ -305,7 +305,6 @@ fn run_privileged_job(spec: PrivilegedJobSpec, worker: &Worker) {
         &session.responses,
     );
 
-    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
     sink.send(BackendEvent::OperationSessionStarted {
         id,
         responder: session.responses.clone(),
@@ -325,14 +324,14 @@ fn run_privileged_job(spec: PrivilegedJobSpec, worker: &Worker) {
             InstallEvent::Authorized => {
                 sink.send(BackendEvent::OperationAuthorized { id });
             }
+            // apt 输出是低频文本行，且界面只保留最新一行；不节流才能保证
+            // 静默期之前的最后一行不被丢弃而让弹窗停留在过期文案上。
             InstallEvent::Output(line) => {
-                if throttle.touch() {
-                    sink.send(BackendEvent::OperationProgress {
-                        id,
-                        message: line,
-                        progress: None,
-                    });
-                }
+                sink.send(BackendEvent::OperationProgress {
+                    id,
+                    message: line,
+                    progress: None,
+                });
             }
             InstallEvent::Finished(result) => {
                 sink.send(BackendEvent::OperationFinished {
