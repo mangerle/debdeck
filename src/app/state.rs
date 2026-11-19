@@ -9,7 +9,7 @@
 //! 因此「entries 变了就必须重算 visible」这条不变量必须有人守着。现在它由
 //! [`ListView`] 与 [`Catalog::revision`] 共同保证，而不是靠调用点记得置一个布尔位。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -254,16 +254,20 @@ pub(crate) fn refresh_allowed(catalog: &Catalog, dialogs: &Dialogs) -> bool {
     !dialogs.is_operation_running() && !catalog.repository_loading()
 }
 
+/// 图标缓存条目上限：避免长时间浏览后 GPU 纹理只增不减。
+const MAX_ICON_CACHE_ENTRIES: usize = 128;
+
 /// 图标缓存条目：区分「后台解码中」与「已得到结果（含缺失）」。
 enum IconState {
     Pending,
     Ready(Option<Arc<RenderImage>>),
 }
 
-/// 图标缓存：图标名 → 加载状态；不存在的图标也会缓存为 `Ready(None)`，避免重复磁盘查找。
+/// 有界图标缓存：图标名 → 加载状态；不存在的图标也会缓存为 `Ready(None)`，避免重复磁盘查找。
 #[derive(Default)]
 pub(crate) struct IconCache {
     entries: HashMap<String, IconState>,
+    order: VecDeque<String>,
 }
 
 impl IconCache {
@@ -285,13 +289,28 @@ impl IconCache {
             return;
         }
         if tasks.load_icon(name.to_string(), max_size) {
-            self.entries.insert(name.to_string(), IconState::Pending);
+            self.insert_entry(name.to_string(), IconState::Pending);
         }
     }
 
     /// 写入后台返回的解码结果。
     pub(crate) fn insert_loaded(&mut self, name: String, image: Option<Arc<RenderImage>>) {
-        self.entries.insert(name, IconState::Ready(image));
+        self.insert_entry(name, IconState::Ready(image));
+    }
+
+    fn insert_entry(&mut self, name: String, state: IconState) {
+        if let Some(existing) = self.entries.get_mut(&name) {
+            *existing = state;
+            return;
+        }
+        while self.entries.len() >= MAX_ICON_CACHE_ENTRIES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.order.push_back(name.clone());
+        self.entries.insert(name, state);
     }
 }
 
@@ -371,4 +390,6 @@ pub(crate) struct DebDeckApp {
     pub(crate) restart_requested: Arc<AtomicBool>,
     /// 首帧稳定后确认升级成功的延时任务；必须由应用持有，避免脱缰。
     pub(crate) update_confirm_task: Option<Task<()>>,
+    /// 搜索输入防抖任务；新输入覆盖时自动取消旧定时器。
+    pub(crate) search_debounce_task: Option<Task<()>>,
 }

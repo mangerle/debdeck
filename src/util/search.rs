@@ -25,20 +25,47 @@ pub fn pinyin_keys(text: &str) -> (String, String) {
 
 /// 构造 haystack 与排序键。
 ///
-/// 返回值第一个元素是换行分隔的索引文本（显示名、包名、摘要、全拼、首字母），
-/// 第二个是用于名称排序的全拼小写串，使中文应用能按拼音顺序排列。
+/// 返回值第一个元素是换行分隔的索引文本（显示名、包名、摘要，含中文时附带全拼与首字母），
+/// 第二个是用于名称排序的小写键（含中文时转为全拼，使中文应用能按拼音顺序排列）。
 pub fn build_search_text(display_name: &str, pkg_name: &str, summary: &str) -> (String, String) {
-    let (pinyin_flat, pinyin_initials) = pinyin_keys(display_name);
-    let sort_name = pinyin_flat.to_lowercase();
-    let search = format!(
-        "{}\n{}\n{}\n{}\n{}",
-        display_name.to_lowercase(),
-        pkg_name.to_lowercase(),
-        summary.to_lowercase(),
-        pinyin_flat.to_lowercase(),
-        pinyin_initials.to_lowercase()
-    );
+    let pinyin = (!display_name.is_ascii()).then(|| pinyin_keys(display_name));
+    let sort_name = match &pinyin {
+        Some((flat, _)) => flat.to_lowercase(),
+        None => display_name.to_ascii_lowercase(),
+    };
+
+    let estimated = display_name.len() + pkg_name.len() + summary.len() + 16;
+    let mut search = String::with_capacity(estimated);
+    push_lower(&mut search, display_name);
+    if !pkg_name.eq_ignore_ascii_case(display_name) {
+        search.push('\n');
+        push_lower(&mut search, pkg_name);
+    }
+    if !summary.is_empty() {
+        search.push('\n');
+        push_lower(&mut search, summary);
+    }
+    if let Some((pinyin_flat, pinyin_initials)) = &pinyin {
+        search.push('\n');
+        push_lower(&mut search, pinyin_flat);
+        search.push('\n');
+        push_lower(&mut search, pinyin_initials);
+    }
     (search, sort_name)
+}
+
+fn push_lower(target: &mut String, text: &str) {
+    if text.is_ascii() {
+        for byte in text.bytes() {
+            target.push(byte.to_ascii_lowercase() as char);
+        }
+    } else {
+        for ch in text.chars() {
+            for lower in ch.to_lowercase() {
+                target.push(lower);
+            }
+        }
+    }
 }
 
 /// 把查询串拆成小写 token；空串得到空列表，调用方据此区分「无搜索」与「搜索」。

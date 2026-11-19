@@ -305,7 +305,7 @@ fn observe_inputs(
     .detach();
     cx.observe(search_input, |this, state, cx| {
         let value = state.read(cx).value().to_string();
-        this.set_search(value, cx);
+        this.schedule_search(value, cx);
     })
     .detach();
     cx.observe(files_input, |this, state, cx| {
@@ -366,6 +366,7 @@ impl DebDeckApp {
             self_update: self_update::SelfUpdate::default(),
             restart_requested,
             update_confirm_task: None,
+            search_debounce_task: None,
         };
         app.start_startup_update_check();
         app.update_confirm_task = Some(cx.spawn(async move |this, cx| {
@@ -416,6 +417,25 @@ impl DebDeckApp {
         self.sync_catalog_view();
         self.flush_clear_files_input(window, cx);
         cx.notify();
+    }
+
+    /// 防抖触发搜索：清空关键词立即生效，非空输入延迟 120ms 避免连续击键反复重排 7 万条记录。
+    pub(crate) fn schedule_search(&mut self, search: String, cx: &mut Context<Self>) {
+        if search.is_empty() {
+            self.search_debounce_task = None;
+            self.set_search(search, cx);
+            return;
+        }
+        if self.list.search == search {
+            self.search_debounce_task = None;
+            return;
+        }
+        self.search_debounce_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(120))
+                .await;
+            _ = this.update(cx, |app, cx| app.set_search(search, cx));
+        }));
     }
 
     pub(crate) fn set_search(&mut self, search: String, cx: &mut Context<Self>) {
