@@ -302,20 +302,17 @@ mod tests {
         let mut catalog = Catalog::new();
         let mut data = InstalledData::default();
         for name in ["aaa", "bbb"] {
-            data.packages.insert(
-                name.to_string(),
-                InstalledPackage {
-                    metadata: PackageMetadata {
-                        name: name.to_string(),
-                        version: "1".to_string(),
-                        arch: "amd64".to_string(),
-                        ..Default::default()
-                    },
-                    dpkg: DpkgState::parse("install ok installed"),
-                    desktop: None,
-                    updated: None,
+            data.record(InstalledPackage {
+                metadata: PackageMetadata {
+                    name: name.to_string(),
+                    version: "1".to_string(),
+                    arch: "amd64".to_string(),
+                    ..Default::default()
                 },
-            );
+                dpkg: DpkgState::parse("install ok installed"),
+                desktop: None,
+                updated: None,
+            });
         }
         catalog.apply(CatalogUpdate::default().installed(Ok(data)));
 

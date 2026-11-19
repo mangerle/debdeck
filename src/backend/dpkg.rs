@@ -7,7 +7,6 @@
 //! 这里一次性把每包的原始段落缓存进 [`InstalledPackage::control`]，让离线重打包
 //! 不必再全量重读 `status`。
 
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
@@ -35,7 +34,7 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
 
     let stanzas = parse_stanzas(&content);
     let info_dir = layout.dpkg_info_dir.canonicalize().ok();
-    let mut packages: HashMap<String, InstalledPackage> = HashMap::with_capacity(stanzas.len());
+    let mut data = InstalledData::default();
 
     for (index, stanza) in stanzas.iter().enumerate() {
         if index > 0 && index % PROGRESS_EVERY == 0 {
@@ -55,18 +54,15 @@ pub fn load_installed(layout: &FsLayout, progress: &mut dyn FnMut(&str)) -> Resu
         let desktop = list_path
             .as_deref()
             .and_then(|path| find_desktop_entry_from_list(&name, path));
-        packages.insert(
-            name,
-            InstalledPackage {
-                metadata,
-                dpkg,
-                desktop,
-                updated,
-            },
-        );
+        data.record(InstalledPackage {
+            metadata,
+            dpkg,
+            desktop,
+            updated,
+        });
     }
 
-    Ok(InstalledData { packages })
+    Ok(data)
 }
 
 /// `info` 目录里某个后缀的文件，优先不限定架构的名字。
@@ -281,12 +277,12 @@ mod tests {
         let data = load_installed(&layout, &mut |_| {}).unwrap();
 
         assert_eq!(data.packages.len(), 2, "未安装的包不应出现");
-        let demo = &data.packages["demo"];
+        let demo = data.primary("demo").expect("demo 应存在");
         assert_eq!(demo.metadata.version, "1.2.3");
         assert_eq!(demo.metadata.installed_size_kb, 2048);
         assert_eq!(demo.metadata.depends, "libc6 (>= 2.39), libfoo");
         assert!(demo.dpkg.is_installed());
-        assert!(data.packages["held"].dpkg.is_held());
+        assert!(data.primary("held").unwrap().dpkg.is_held());
         // 文件清单与原始控制段落改为按需读取。
         assert_eq!(
             installed_files(&layout, "demo", "amd64").unwrap(),
@@ -296,6 +292,29 @@ mod tests {
             .unwrap()
             .expect("应能按需读回原始控制段落");
         assert_eq!(control.get_first_line("Package"), "demo");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn preserves_multi_arch_installed_packages() {
+        let root =
+            std::env::temp_dir().join(format!("debdeck-dpkg-multiarch-{}", std::process::id()));
+        let layout = FsLayout::with_root(&root);
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(layout.dpkg_status.parent().unwrap()).unwrap();
+        fs::create_dir_all(&layout.dpkg_info_dir).unwrap();
+        fs::write(
+            &layout.dpkg_status,
+            "Package: libc6\nStatus: install ok installed\nArchitecture: amd64\nVersion: 2.39\n\nPackage: libc6\nStatus: install ok installed\nArchitecture: i386\nVersion: 2.39\n\n",
+        )
+        .unwrap();
+
+        let data = load_installed(&layout, &mut |_| {}).unwrap();
+        let instances = data.instances("libc6");
+        assert_eq!(instances.len(), 2);
+        assert_eq!(instances[0].metadata.arch, "amd64");
+        assert_eq!(instances[1].metadata.arch, "i386");
 
         let _ = fs::remove_dir_all(&root);
     }

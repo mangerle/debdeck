@@ -62,7 +62,7 @@ fn build_entry(
     repository: &RepositoryData,
     upgradable: Option<&HashSet<String>>,
 ) -> AppEntry {
-    let installed_pkg = installed.packages.get(name);
+    let installed_pkg = installed.primary(name);
     let installed_meta = installed_pkg.map(|pkg| &pkg.metadata);
     let latest = repository.latest(name).map(|package| &package.metadata);
     let desktop = installed_pkg.and_then(|pkg| pkg.desktop.as_ref());
@@ -153,18 +153,15 @@ mod tests {
     #[test]
     fn merges_installed_and_repository_packages() {
         let mut installed = InstalledData::default();
-        installed.packages.insert(
-            "hello".to_string(),
-            InstalledPackage {
-                metadata: metadata("hello", "1.0"),
-                dpkg: DpkgState {
-                    selection: DpkgSelection::Install,
-                    status: DpkgStatus::Installed,
-                },
-                desktop: None,
-                updated: None,
+        installed.record(InstalledPackage {
+            metadata: metadata("hello", "1.0"),
+            dpkg: DpkgState {
+                selection: DpkgSelection::Install,
+                status: DpkgStatus::Installed,
             },
-        );
+            desktop: None,
+            updated: None,
+        });
         let mut repository = RepositoryData::default();
         repository
             .packages

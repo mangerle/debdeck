@@ -142,7 +142,7 @@ impl Catalog {
         if let Some(package) = self
             .installed
             .as_mut()
-            .and_then(|data| data.packages.get_mut(pkg))
+            .and_then(|data| data.primary_mut(pkg))
             && let Some(desktop) = package.desktop.as_mut()
         {
             desktop.menu_state = state;
@@ -220,7 +220,7 @@ impl Catalog {
     pub(crate) fn installed_version(&self, pkg: &str) -> Option<(String, String)> {
         self.installed
             .as_ref()
-            .and_then(|data| data.packages.get(pkg))
+            .and_then(|data| data.primary(pkg))
             .map(|package| {
                 (
                     package.metadata.version.clone(),
@@ -231,9 +231,7 @@ impl Catalog {
 
     /// 某个包的完整已安装记录（文件清单、桌面条目等）。
     pub(crate) fn installed_package(&self, pkg: &str) -> Option<&InstalledPackage> {
-        self.installed
-            .as_ref()
-            .and_then(|data| data.packages.get(pkg))
+        self.installed.as_ref().and_then(|data| data.primary(pkg))
     }
 }
 
@@ -244,21 +242,18 @@ mod tests {
 
     fn installed_with(name: &str, version: &str) -> InstalledData {
         let mut data = InstalledData::default();
-        data.packages.insert(
-            name.to_string(),
-            InstalledPackage {
-                metadata: PackageMetadata {
-                    name: name.to_string(),
-                    version: version.to_string(),
-                    arch: "amd64".to_string(),
-                    summary: "s".to_string(),
-                    ..Default::default()
-                },
-                dpkg: DpkgState::parse("install ok installed"),
-                desktop: None,
-                updated: None,
+        data.record(InstalledPackage {
+            metadata: PackageMetadata {
+                name: name.to_string(),
+                version: version.to_string(),
+                arch: "amd64".to_string(),
+                summary: "s".to_string(),
+                ..Default::default()
             },
-        );
+            dpkg: DpkgState::parse("install ok installed"),
+            desktop: None,
+            updated: None,
+        });
         data
     }
 

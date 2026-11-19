@@ -229,6 +229,7 @@ mod tests {
         let package = installed
             .packages
             .values()
+            .flatten()
             .find(|package| {
                 dpkg::installed_files(&layout, &package.metadata.name, &package.metadata.arch)
                     .is_some_and(|files| (5..500).contains(&files.len()))

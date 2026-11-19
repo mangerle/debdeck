@@ -197,9 +197,53 @@ pub struct InstalledPackage {
     pub updated: Option<SystemTime>,
 }
 
+/// 已安装软件包集合。
+///
+/// 按包名分组存储全部已安装架构实例（multi-arch 场景下同一包名可同时装有多个架构）。
+/// 每个非空列表的索引 0 视为默认主实例（带桌面入口或首个被记录的实例）。
 #[derive(Clone, Debug, Default)]
 pub struct InstalledData {
-    pub packages: HashMap<String, InstalledPackage>,
+    pub packages: HashMap<String, Vec<InstalledPackage>>,
+}
+
+impl InstalledData {
+    /// 记录一个已安装实例；同包同架构时覆盖更新，多架构实例则共存。
+    pub fn record(&mut self, package: InstalledPackage) {
+        let name = package.metadata.name.clone();
+        let list = self.packages.entry(name).or_default();
+        if let Some(existing) = list
+            .iter_mut()
+            .find(|item| item.metadata.arch == package.metadata.arch)
+        {
+            *existing = package;
+        } else if package.desktop.is_some()
+            && list.first().is_some_and(|first| first.desktop.is_none())
+        {
+            list.insert(0, package);
+        } else {
+            list.push(package);
+        }
+    }
+
+    /// 获取包名对应的主实例。
+    pub fn primary(&self, name: &str) -> Option<&InstalledPackage> {
+        self.packages.get(name).and_then(|list| list.first())
+    }
+
+    /// 获取包名对应的主实例（可变引用）。
+    pub fn primary_mut(&mut self, name: &str) -> Option<&mut InstalledPackage> {
+        self.packages
+            .get_mut(name)
+            .and_then(|list| list.first_mut())
+    }
+
+    /// 获取某个包名的全部已安装架构实例。
+    #[cfg(test)]
+    pub fn instances(&self, name: &str) -> &[InstalledPackage] {
+        self.packages
+            .get(name)
+            .map_or(&[] as &[InstalledPackage], Vec::as_slice)
+    }
 }
 
 #[cfg(test)]
