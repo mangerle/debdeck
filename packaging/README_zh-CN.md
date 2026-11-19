@@ -110,7 +110,7 @@ shipup-cli keygen -o ~/.config/debdeck/update-signing
 chmod 600 ~/.config/debdeck/update-signing/ed25519.key
 ```
 
-把 `ed25519.pub` 的 Base64 内容写入 `src/update.rs` 的 `UPDATE_PUBLIC_KEY`，再把
+把 `ed25519.pub` 的 Base64 内容写入 `src/backend/self_update.rs` 的 `UPDATE_PUBLIC_KEY`，再把
 `ed25519.key` 的单行 Base64 内容保存为 GitHub Secret：
 
 ```bash
@@ -151,7 +151,7 @@ SHA256SUMS
 3. 行为变化时同步更新发布相关文档。
 4. 运行格式检查、Clippy、测试与本地 `cargo deb --locked --fast --compress-type xz` 构建。
 5. 提交并推送 `main`。
-6. 确认仓库 Secret `SHIPUP_PRIVATE_KEY` 与 `src/update.rs` 内置公钥匹配。
+6. 确认仓库 Secret `SHIPUP_PRIVATE_KEY` 与 `src/backend/self_update.rs` 内置公钥匹配。
 7. 创建并推送 annotated `vX.Y.Z` 标签。
 8. 确认发布流水线已上传两个 `.deb`、`latest.json` 与 `SHA256SUMS`，且 GitHub
    Release 正文包含分类后的版本变更。

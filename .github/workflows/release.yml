@@ -290,9 +290,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          EMBEDDED_KEY="$(sed -n 's/.*UPDATE_PUBLIC_KEY: &str = "\([^"]*\)";/\1/p' src/update.rs | head -n 1)"
+          EMBEDDED_KEY="$(sed -n 's/.*UPDATE_PUBLIC_KEY: &str = "\([^"]*\)";/\1/p' src/backend/self_update.rs | head -n 1)"
           if [ -z "$EMBEDDED_KEY" ]; then
-            echo "::error::未能从 src/update.rs 提取内置公钥"
+            echo "::error::未能从 src/backend/self_update.rs 提取内置公钥"
             exit 1
           fi
           verify_package() {

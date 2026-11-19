@@ -116,7 +116,7 @@ chmod 600 ~/.config/debdeck/update-signing/ed25519.key
 ```
 
 Embed the Base64 content of `ed25519.pub` in `UPDATE_PUBLIC_KEY` in
-`src/update.rs`, then store the single-line private key as a GitHub Secret:
+`src/backend/self_update.rs`, then store the single-line private key as a GitHub Secret:
 
 ```bash
 gh secret set SHIPUP_PRIVATE_KEY < ~/.config/debdeck/update-signing/ed25519.key
@@ -159,7 +159,7 @@ the public key embedded in the client.
 3. Update release-facing documentation if behavior changed.
 4. Run formatting, Clippy, tests and a local `cargo deb --locked --fast --compress-type xz` build.
 5. Commit and push `main`.
-6. Confirm that `SHIPUP_PRIVATE_KEY` matches the public key in `src/update.rs`.
+6. Confirm that `SHIPUP_PRIVATE_KEY` matches the public key in `src/backend/self_update.rs`.
 7. Create and push an annotated `vX.Y.Z` tag.
 8. Confirm that the release workflow published both `.deb` files, `latest.json`
    and `SHA256SUMS`, and that the Release body contains categorized changes.
