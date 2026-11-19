@@ -5,9 +5,8 @@ use std::result::Result;
 use std::time::Duration;
 
 use crate::backend::{BackendError, Result as BackendResult};
-use zbus::blocking::connection::Builder;
-use zbus::blocking::{Connection, Proxy};
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::connection::Builder;
+use zbus::{Connection, OwnedVariant, Proxy, Variant, block_on};
 
 use super::AGENT_PATH;
 use super::controller::{AuthOutcome, AuthRequest};
@@ -29,9 +28,10 @@ pub(super) struct AgentRegistration {
 impl Drop for AgentRegistration {
     fn drop(&mut self) {
         let subject = subject_value(self.pid, self.start_time, self.uid);
-        let _ = self
-            .proxy
-            .call_method("UnregisterAuthenticationAgent", &(subject, AGENT_PATH));
+        let _ = block_on(
+            self.proxy
+                .call_method("UnregisterAuthenticationAgent", &(subject, AGENT_PATH)),
+        );
     }
 }
 
@@ -46,15 +46,14 @@ pub(super) fn register_agent(
     let proxy = create_authority_proxy(connection)?;
     let subject = subject_value(pid, start_time, uid);
     let locale = std::env::var("LANG").unwrap_or_else(|_| "C".to_string());
-    proxy
-        .call_method(
-            "RegisterAuthenticationAgent",
-            &(subject, locale, AGENT_PATH),
-        )
-        .map_err(|error| BackendError::Dbus {
-            operation: "注册 polkit 认证代理",
-            detail: error.to_string(),
-        })?;
+    block_on(proxy.call_method(
+        "RegisterAuthenticationAgent",
+        &(subject, locale, AGENT_PATH),
+    ))
+    .map_err(|error| BackendError::Dbus {
+        operation: "注册 polkit 认证代理",
+        detail: error.to_string(),
+    })?;
     tracing::info!("已注册内嵌 polkit 认证代理（安装进程 pid {pid}）");
     Ok(AgentRegistration {
         proxy,
@@ -65,34 +64,34 @@ pub(super) fn register_agent(
 }
 
 fn create_agent_connection(iface: AgentIface) -> BackendResult<Connection> {
-    let connection = Builder::system()
-        .map_err(|error| BackendError::Dbus {
-            operation: "初始化系统总线连接",
-            detail: error.to_string(),
-        })?
-        .method_timeout(DBUS_METHOD_TIMEOUT)
-        .build()
-        .map_err(|error| BackendError::Dbus {
-            operation: "连接系统总线",
-            detail: error.to_string(),
-        })?;
-    connection
-        .object_server()
-        .at(AGENT_PATH, iface)
-        .map_err(|error| BackendError::Dbus {
-            operation: "导出 polkit 认证代理对象",
-            detail: error.to_string(),
-        })?;
-    Ok(connection)
+    block_on(async {
+        let connection = Builder::system()
+            .method_timeout(DBUS_METHOD_TIMEOUT)
+            .build()
+            .await
+            .map_err(|error| BackendError::Dbus {
+                operation: "连接系统总线",
+                detail: error.to_string(),
+            })?;
+        connection
+            .object_server()
+            .at(AGENT_PATH, iface)
+            .await
+            .map_err(|error| BackendError::Dbus {
+                operation: "导出 polkit 认证代理对象",
+                detail: error.to_string(),
+            })?;
+        Ok(connection)
+    })
 }
 
 fn create_authority_proxy(connection: Connection) -> BackendResult<Proxy<'static>> {
-    Proxy::new_owned(
+    block_on(Proxy::new_owned(
         connection,
         AUTHORITY_SERVICE,
         AUTHORITY_PATH,
         AUTHORITY_IFACE,
-    )
+    ))
     .map_err(|error| BackendError::Dbus {
         operation: "连接 PolicyKit",
         detail: error.to_string(),
@@ -103,11 +102,11 @@ fn subject_value(
     pid: u32,
     start_time: u64,
     uid: i32,
-) -> (&'static str, HashMap<&'static str, Value<'static>>) {
+) -> (&'static str, HashMap<&'static str, Variant<'static>>) {
     let mut details = HashMap::with_capacity(3);
-    details.insert("pid", Value::from(pid));
-    details.insert("start-time", Value::from(start_time));
-    details.insert("uid", Value::from(uid));
+    details.insert("pid", Variant::from(pid));
+    details.insert("start-time", Variant::from(start_time));
+    details.insert("uid", Variant::from(uid));
     ("unix-process", details)
 }
 
@@ -138,7 +137,7 @@ impl AgentIface {
         icon_name: String,
         details: HashMap<String, String>,
         cookie: String,
-        identities: Vec<(String, HashMap<String, OwnedValue>)>,
+        identities: Vec<(String, HashMap<String, OwnedVariant>)>,
     ) -> Result<(), PolicyKitError> {
         tracing::info!("收到 polkit 认证请求：{action_id}");
         let _ = (icon_name, details);

@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nix::unistd::Uid;
-use zbus::zvariant::OwnedValue;
+use zbus::OwnedVariant;
 
 use crate::backend::{privileged, shell};
 
@@ -30,7 +30,7 @@ pub(super) enum AuthRequest {
     Begin {
         cookie: String,
         message: String,
-        identities: Vec<(String, HashMap<String, OwnedValue>)>,
+        identities: Vec<(String, HashMap<String, OwnedVariant>)>,
         /// 认证结束时用它唤醒挂起的 D-Bus 调用。
         done: async_channel::Sender<AuthOutcome>,
     },
@@ -159,7 +159,7 @@ fn fallback_to_system(args: &[String], pkg: &str, events: &async_channel::Sender
 struct AuthBegin {
     cookie: String,
     message: String,
-    identities: Vec<(String, HashMap<String, OwnedValue>)>,
+    identities: Vec<(String, HashMap<String, OwnedVariant>)>,
     done: async_channel::Sender<AuthOutcome>,
 }
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::backend::{BackendError, Result};
 use nix::unistd::{Uid, User};
-use zbus::zvariant::OwnedValue;
+use zbus::OwnedVariant;
 
 use crate::util::{CommandError, wait_child};
 
@@ -57,7 +57,7 @@ impl HelperSession {
     /// 连接 helper 并启动后台协议循环。
     pub(super) fn start(
         cookie: &str,
-        identities: &[(String, HashMap<String, OwnedValue>)],
+        identities: &[(String, HashMap<String, OwnedVariant>)],
     ) -> Result<Self> {
         let username = identity_username(identities)?;
         let (read_end, write_end, child) = open_helper(&username, cookie)?;
@@ -113,7 +113,7 @@ impl Drop for HelperSession {
 }
 
 /// 从 polkit 身份列表里选一个可登录的 Unix 用户。
-fn identity_username(identities: &[(String, HashMap<String, OwnedValue>)]) -> Result<String> {
+fn identity_username(identities: &[(String, HashMap<String, OwnedVariant>)]) -> Result<String> {
     for (kind, details) in identities {
         if kind != "unix-user" {
             continue;
