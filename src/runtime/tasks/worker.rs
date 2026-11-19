@@ -76,11 +76,18 @@ fn send_catalog_update(layout: &FsLayout, sink: &EventSink) {
     let mut on_stage = |stage: &str| sink.send(BackendEvent::Stage(stage.to_string()));
     let installed =
         dpkg::load_installed(layout, &mut on_stage).map_err(|error| report_error(&error));
+    let ok = installed.is_ok();
+    sink.send(BackendEvent::CatalogUpdated(
+        CatalogUpdate::default().installed(installed),
+    ));
+    if !ok {
+        return;
+    }
+
+    // `apt list --upgradable` 需启动外部子进程，放在首屏就绪后再增量推送，避免拖慢启动页。
     let upgradable = upgradable_report();
     sink.send(BackendEvent::CatalogUpdated(
-        CatalogUpdate::default()
-            .installed(installed)
-            .upgradable(upgradable),
+        CatalogUpdate::default().upgradable(upgradable),
     ));
 }
 
