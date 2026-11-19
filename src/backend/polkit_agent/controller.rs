@@ -229,7 +229,7 @@ impl Controller<'_> {
             }
             ControllerEvent::Response(response) => self.handle_response(process, response),
             ControllerEvent::ProcessOutput(line) => {
-                let _ = self.events.try_send(InstallEvent::Output(line));
+                send_install_event(&self.events, InstallEvent::Output(line));
                 true
             }
             ControllerEvent::ProcessExited(exit) => {

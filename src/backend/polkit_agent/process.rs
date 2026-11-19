@@ -14,6 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::backend::{BackendError, Result};
+use async_channel::TrySendError;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 
@@ -27,6 +28,9 @@ const OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const READ_CHUNK: usize = 4096;
 /// `SIGTERM` 后等待 `pkexec` 进程组自然退出的宽限时间，超时后改用 `SIGKILL`。
 const TERM_GRACE: Duration = Duration::from_millis(200);
+/// 输出队列满时的重试间隔。控制器是唯一消费者，短暂退避即可恢复背压，
+/// 同时避免紧密自旋占满 CPU。
+const OUTPUT_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 
 /// 已结束的 `pkexec` 进程。
 pub(super) struct ProcessExit {
@@ -44,6 +48,7 @@ pub(super) struct PkexecProcess {
     pid: u32,
     reaped: Arc<AtomicBool>,
     done: Arc<(Mutex<bool>, Condvar)>,
+    output_stopped: Arc<AtomicBool>,
     wait_thread: Option<JoinHandle<()>>,
     finished: bool,
 }
@@ -78,10 +83,19 @@ impl PkexecProcess {
         let pid = child.id();
         let stdout = Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
         let stderr = Arc::new(Mutex::new(Vec::with_capacity(64 * 1024)));
-        let stdout_thread =
-            spawn_output_reader(child.stdout.take(), Arc::clone(&stdout), events.clone());
-        let stderr_thread =
-            spawn_output_reader(child.stderr.take(), Arc::clone(&stderr), events.clone());
+        let output_stopped = Arc::new(AtomicBool::new(false));
+        let stdout_thread = spawn_output_reader(
+            child.stdout.take(),
+            Arc::clone(&stdout),
+            events.clone(),
+            Arc::clone(&output_stopped),
+        );
+        let stderr_thread = spawn_output_reader(
+            child.stderr.take(),
+            Arc::clone(&stderr),
+            events.clone(),
+            Arc::clone(&output_stopped),
+        );
 
         let reaped = Arc::new(AtomicBool::new(false));
         let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -100,6 +114,7 @@ impl PkexecProcess {
             pid,
             reaped,
             done,
+            output_stopped,
             wait_thread: Some(wait_thread),
             finished: false,
         })
@@ -114,6 +129,9 @@ impl PkexecProcess {
     /// 终止进程组并等待阻塞回收线程与输出线程全部结束。
     pub(super) fn terminate(&mut self) {
         if !self.finished {
+            // 先解除输出线程的队列重试，再等待子进程退出，避免控制器在
+            // 停止阶段与仍在等待满队列容量的输出线程互相阻塞。
+            self.output_stopped.store(true, Ordering::Relaxed);
             if !self.reaped.load(Ordering::Acquire) {
                 send_group_signal(self.pid, Signal::SIGTERM);
                 if !self.wait_done(TERM_GRACE) && !self.reaped.load(Ordering::Acquire) {
@@ -229,10 +247,11 @@ fn spawn_output_reader(
     pipe: Option<impl Read + Send + 'static>,
     buffer: Arc<Mutex<Vec<u8>>>,
     events: async_channel::Sender<ControllerEvent>,
+    stopped: Arc<AtomicBool>,
 ) -> Option<JoinHandle<()>> {
     let mut pipe = pipe?;
     Some(thread::spawn(move || {
-        drain_pipe(&mut pipe, &buffer, &events);
+        drain_pipe(&mut pipe, &buffer, &events, &stopped);
     }))
 }
 
@@ -240,6 +259,7 @@ fn drain_pipe(
     pipe: &mut impl Read,
     buffer: &Arc<Mutex<Vec<u8>>>,
     events: &async_channel::Sender<ControllerEvent>,
+    stopped: &AtomicBool,
 ) {
     let mut chunk = [0_u8; READ_CHUNK];
     let mut pending = Vec::new();
@@ -251,35 +271,58 @@ fn drain_pipe(
                     let keep = OUTPUT_LIMIT.saturating_sub(buffer.len()).min(count);
                     buffer.extend_from_slice(&chunk[..keep]);
                 }
-                emit_lines(&mut pending, &chunk[..count], events);
+                emit_lines(&mut pending, &chunk[..count], events, stopped);
             }
         }
     }
-    flush_pending(&mut pending, events);
+    flush_pending(&mut pending, events, stopped);
 }
 
 fn emit_lines(
     pending: &mut Vec<u8>,
     chunk: &[u8],
     events: &async_channel::Sender<ControllerEvent>,
+    stopped: &AtomicBool,
 ) {
     for &byte in chunk {
         if byte == b'\n' || byte == b'\r' {
-            flush_pending(pending, events);
+            flush_pending(pending, events, stopped);
         } else if pending.len() < 2048 {
             pending.push(byte);
         }
     }
 }
 
-fn flush_pending(pending: &mut Vec<u8>, events: &async_channel::Sender<ControllerEvent>) {
+fn flush_pending(
+    pending: &mut Vec<u8>,
+    events: &async_channel::Sender<ControllerEvent>,
+    stopped: &AtomicBool,
+) {
     if pending.is_empty() {
         return;
     }
     let line = String::from_utf8_lossy(pending).trim().to_string();
     pending.clear();
     if !line.is_empty() {
-        let _ = events.try_send(ControllerEvent::ProcessOutput(line));
+        send_output_event(events, stopped, line);
+    }
+}
+
+/// 有界队列满时等待控制器腾出容量；只有进程终止时才放弃尚未送达的展示行。
+fn send_output_event(
+    events: &async_channel::Sender<ControllerEvent>,
+    stopped: &AtomicBool,
+    line: String,
+) {
+    let mut event = ControllerEvent::ProcessOutput(line);
+    while !stopped.load(Ordering::Relaxed) {
+        match events.try_send(event) {
+            Ok(()) | Err(TrySendError::Closed(_)) => return,
+            Err(TrySendError::Full(returned)) => {
+                event = returned;
+                thread::sleep(OUTPUT_RETRY_INTERVAL);
+            }
+        }
     }
 }
 
@@ -318,8 +361,53 @@ mod tests {
         let data = vec![b'x'; OUTPUT_LIMIT.saturating_add(READ_CHUNK)];
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let (tx, _rx) = async_channel::bounded(8);
-        let handle = spawn_output_reader(Some(Cursor::new(data)), Arc::clone(&buffer), tx);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let handle = spawn_output_reader(Some(Cursor::new(data)), Arc::clone(&buffer), tx, stopped);
         handle.unwrap().join().unwrap();
         assert_eq!(buffer.lock().unwrap().len(), OUTPUT_LIMIT);
+    }
+
+    #[test]
+    fn output_reader_waits_for_capacity_without_dropping_lines() {
+        let (tx, rx) = async_channel::bounded(1);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let handle = spawn_output_reader(
+            Some(Cursor::new(b"first\nsecond\n".to_vec())),
+            Arc::new(Mutex::new(Vec::new())),
+            tx,
+            stopped,
+        );
+
+        assert!(matches!(
+            rx.recv_blocking().unwrap(),
+            ControllerEvent::ProcessOutput(line) if line == "first"
+        ));
+        assert!(matches!(
+            rx.recv_blocking().unwrap(),
+            ControllerEvent::ProcessOutput(line) if line == "second"
+        ));
+        handle.unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn stopping_releases_output_reader_waiting_on_full_queue() {
+        let (tx, rx) = async_channel::bounded(1);
+        tx.try_send(ControllerEvent::ProcessOutput("已占用".to_string()))
+            .unwrap();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let handle = spawn_output_reader(
+            Some(Cursor::new(b"pending\n".to_vec())),
+            Arc::new(Mutex::new(Vec::new())),
+            tx,
+            Arc::clone(&stopped),
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        stopped.store(true, Ordering::Relaxed);
+        handle.unwrap().join().unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ControllerEvent::ProcessOutput(line)) if line == "已占用"
+        ));
     }
 }
