@@ -82,6 +82,9 @@ fn sleep_responsive(stop: &AtomicBool, duration: Duration) -> bool {
     let mut remaining = duration;
     while !stop.load(Ordering::Relaxed) {
         if remaining <= STEP {
+            if !remaining.is_zero() {
+                thread::sleep(remaining);
+            }
             return stop.load(Ordering::Relaxed);
         }
         thread::sleep(STEP);
@@ -99,6 +102,14 @@ mod tests {
     fn stop_flag_ends_sleep() {
         let stop = AtomicBool::new(true);
         assert!(sleep_responsive(&stop, Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn waits_full_duration_when_not_stopped() {
+        let stop = AtomicBool::new(false);
+        let start = std::time::Instant::now();
+        assert!(!sleep_responsive(&stop, Duration::from_millis(40)));
+        assert!(start.elapsed() >= Duration::from_millis(35));
     }
 
     /// 轮询判定：只有「读得到」且「与上次不同」才算变化。
