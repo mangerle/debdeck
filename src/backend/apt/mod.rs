@@ -3,6 +3,7 @@
 //! [`load_repository`] 是本层唯一编排者：它把「索引文件名」与「源 URI」这两个
 //! 独立事实对齐，任何对不齐都要留下用户能看到的警告，而不是静默丢数据。
 
+use std::num::NonZero;
 use std::path::PathBuf;
 
 use crate::backend::fs_layout::FsLayout;
@@ -97,8 +98,7 @@ fn scan_indexes_parallel(
     scan: &mut IndexScan,
 ) {
     let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(2)
+        .map_or(2, NonZero::get)
         .clamp(1, 4)
         .min(jobs.len());
     let chunk_size = jobs.len().div_ceil(workers);

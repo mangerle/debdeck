@@ -94,7 +94,7 @@ fn scan_list_file_names(info_dir: Option<&Path>) -> HashSet<String> {
     let mut names = HashSet::with_capacity(2048);
     for entry in entries.flatten() {
         if let Some(name) = entry.file_name().to_str()
-            && name.ends_with(".list")
+            && name.strip_suffix(".list").is_some()
         {
             names.insert(name.to_string());
         }

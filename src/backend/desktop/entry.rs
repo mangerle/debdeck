@@ -17,15 +17,16 @@ pub fn parse_desktop_file(path: &Path) -> Option<DesktopEntry> {
 /// 带 `TryExec` 结果缓存的桌面条目解析，供批量扫描时复用 `PATH` 探测结果。
 pub(crate) fn parse_desktop_file_with_cache(
     path: &Path,
-    mut try_exec_cache: Option<&mut HashMap<String, bool>>,
+    try_exec_cache: Option<&mut HashMap<String, bool>>,
 ) -> Option<DesktopEntry> {
     let content = fs::read_to_string(path).ok()?;
-    let mut entry = parse_desktop_str_impl(&content, path, try_exec_cache.as_deref_mut())?;
+    let mut entry = parse_desktop_str_impl(&content, path, try_exec_cache)?;
     entry.path = path.to_path_buf();
     Some(entry)
 }
 
 /// 从文本解析桌面条目。`path` 仅用于在缺少 `Name` 时回落到文件名。
+#[cfg(test)]
 pub fn parse_desktop_str(content: &str, path: &Path) -> Option<DesktopEntry> {
     parse_desktop_str_impl(content, path, None)
 }
@@ -33,7 +34,7 @@ pub fn parse_desktop_str(content: &str, path: &Path) -> Option<DesktopEntry> {
 fn parse_desktop_str_impl(
     content: &str,
     path: &Path,
-    mut try_exec_cache: Option<&mut HashMap<String, bool>>,
+    try_exec_cache: Option<&mut HashMap<String, bool>>,
 ) -> Option<DesktopEntry> {
     let values = parse_kv(content);
     if values.is_empty() {
@@ -55,7 +56,7 @@ fn parse_desktop_str_impl(
     // TryExec 指向的程序不存在时，条目虽然合法也启动不了，直接不展示。
     if let Some(try_exec) = values.get("TryExec") {
         let trimmed = try_exec.trim();
-        if !trimmed.is_empty() && !check_try_exec(trimmed, try_exec_cache.as_deref_mut()) {
+        if !trimmed.is_empty() && !check_try_exec(trimmed, try_exec_cache) {
             return None;
         }
     }

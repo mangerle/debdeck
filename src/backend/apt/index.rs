@@ -245,8 +245,9 @@ pub fn parse_index_into(
     base: &str,
     native_arch: &str,
 ) {
+    let shared_base: Arc<str> = Arc::from(base);
     for stanza in parse_stanzas(content) {
-        parse_stanza_into(repository, &stanza, base, native_arch);
+        parse_stanza_into(repository, &stanza, &shared_base, native_arch);
     }
 }
 
