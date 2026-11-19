@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::backend::{BackendError, Result};
 
-use crate::util::{command_exists, run_command};
+use crate::util::{command_exists, run_command, run_command_streaming};
 
 use super::deb_file;
 
@@ -50,13 +50,25 @@ fn ensure_package_name(pkg: &str) -> Result<()> {
 /// 下没有 tty，会直接卡死）。退出码 126/127 通常意味着用户在 polkit 弹窗里
 /// 取消或系统缺少认证代理，额外给出提示。
 fn run_privileged(args: &[&str]) -> Result<String> {
+    run_privileged_impl(args, None)
+}
+
+fn run_privileged_streaming(args: &[&str], on_line: &mut dyn FnMut(&str)) -> Result<String> {
+    run_privileged_impl(args, Some(on_line))
+}
+
+fn run_privileged_impl(args: &[&str], on_line: Option<&mut dyn FnMut(&str)>) -> Result<String> {
     if !command_exists("pkexec") {
         return Err(BackendError::missing_program("请求管理员权限", "pkexec"));
     }
     let mut command = Command::new("pkexec");
     command.args(args).env("DEBIAN_FRONTEND", "noninteractive");
-    let output = run_command(&mut command, Duration::from_mins(30))
-        .map_err(|source| BackendError::command("请求管理员权限", source))?;
+    let output = match on_line {
+        Some(callback) => run_command_streaming(&mut command, Duration::from_mins(30), callback),
+        None => run_command(&mut command, Duration::from_mins(30)),
+    }
+    .map_err(|source| BackendError::command("请求管理员权限", source))?;
+
     let mut text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !stderr.is_empty() {
@@ -69,11 +81,7 @@ fn run_privileged(args: &[&str]) -> Result<String> {
         return Ok(text);
     }
     let code = output.status.code().unwrap_or(-1);
-    let hint = if code == 126 || code == 127 {
-        "\n提示：管理员认证可能被取消，或系统没有可用的 polkit 认证代理。"
-    } else {
-        ""
-    };
+    let hint = failure_hint(code, &text);
     let detail = if text.is_empty() {
         format!("命令执行失败（退出码 {code}）。{hint}")
     } else {
@@ -84,6 +92,16 @@ fn run_privileged(args: &[&str]) -> Result<String> {
         code,
         detail,
     })
+}
+
+fn failure_hint(code: i32, text: &str) -> &'static str {
+    if code == 126 || code == 127 {
+        "\n提示：管理员认证可能被取消，或系统没有可用的 polkit 认证代理。"
+    } else if text.contains("Could not get lock") || text.contains("Unable to acquire") {
+        "\n提示：APT 正被其他进程占用，请等待系统更新或终端 apt 操作完成后重试。"
+    } else {
+        ""
+    }
 }
 
 /// 卸载软件包（保留依赖处理给 apt）。
@@ -98,6 +116,65 @@ pub fn set_hold_state(pkg: &str, hold: bool) -> Result<()> {
     ensure_package_name(pkg)?;
     let action = if hold { "hold" } else { "unhold" };
     run_privileged(&["apt-mark", action, pkg])?;
+    Ok(())
+}
+
+/// 同步 APT 软件源索引（`apt-get update`）。
+///
+/// # Errors
+/// 提权失败、APT 锁被占用或网络错误时返回 [`BackendError`]。
+pub fn apt_update(on_line: &mut dyn FnMut(&str)) -> Result<()> {
+    run_privileged_streaming(
+        &["/usr/bin/apt-get", "update", "-o", "DPkg::Lock::Timeout=10"],
+        on_line,
+    )?;
+    Ok(())
+}
+
+/// 升级全部可升级软件包（`apt-get upgrade`）。
+///
+/// # Errors
+/// 提权失败、APT 锁被占用或升级过程出错时返回 [`BackendError`]。
+pub fn upgrade_all(on_line: &mut dyn FnMut(&str)) -> Result<()> {
+    run_privileged_streaming(
+        &[
+            "/usr/bin/apt-get",
+            "upgrade",
+            "-y",
+            "-o",
+            "DPkg::Lock::Timeout=10",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+        ],
+        on_line,
+    )?;
+    Ok(())
+}
+
+/// 仅升级指定已安装软件包（`apt-get install --only-upgrade`）。
+///
+/// # Errors
+/// 包名校验失败、提权失败、APT 锁被占用或升级过程出错时返回 [`BackendError`]。
+pub fn upgrade_package(pkg: &str, on_line: &mut dyn FnMut(&str)) -> Result<()> {
+    ensure_package_name(pkg)?;
+    run_privileged_streaming(
+        &[
+            "/usr/bin/apt-get",
+            "install",
+            "--only-upgrade",
+            "-y",
+            "-o",
+            "DPkg::Lock::Timeout=10",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+            pkg,
+        ],
+        on_line,
+    )?;
     Ok(())
 }
 
@@ -157,6 +234,9 @@ mod tests {
         // 恶意包名必须在任何子进程启动前被拒绝（沙箱里 pkexec 未必存在，
         // 因此这里只断言错误信息本身）。
         let error = set_hold_state("bad;rm -rf /", true).unwrap_err();
+        assert!(error.to_string().contains("无效的软件包名称"), "{error}");
+
+        let error = upgrade_package("bad;rm -rf /", &mut |_| {}).unwrap_err();
         assert!(error.to_string().contains("无效的软件包名称"), "{error}");
     }
 

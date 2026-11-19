@@ -12,9 +12,10 @@
 //! 因此优先保证进程可控与内存有界。项目只支持 Linux，进程组与信号处理直接使用
 //! Unix/Linux 语义，不再声明与支持目标不符的跨平台条件分支。
 
-use std::io::{Error as IoError, Read, Result as IoResult};
+use std::io::{BufRead, BufReader, Error as IoError, Read, Result as IoResult};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -71,6 +72,59 @@ pub enum CommandError {
         /// 命令名或路径。
         command: String,
     },
+}
+
+/// 执行命令并返回受控的标准输出结构；在等待期间逐行回调标准输出与标准错误。
+///
+/// # Errors
+///
+/// 同 [`run_command`]：启动失败、超时、等待失败或管道读取失败时返回错误。
+pub fn run_command_streaming(
+    command: &mut Command,
+    timeout: Duration,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<Output, CommandError> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+
+    let mut child = command.spawn().map_err(|source| CommandError::Spawn {
+        command: program.clone(),
+        source,
+    })?;
+    let (line_tx, line_rx) = sync_channel::<String>(64);
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|s| spawn_streaming_reader(s, line_tx.clone()));
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|s| spawn_streaming_reader(s, line_tx.clone()));
+    drop(line_tx);
+
+    let status = match poll_exit_streaming(&mut child, timeout, &program, &line_rx, on_line) {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = join_reader(stdout_handle, &program);
+            let _ = join_reader(stderr_handle, &program);
+            return Err(error);
+        }
+    };
+
+    let stdout = join_reader(stdout_handle, &program)?;
+    let stderr = join_reader(stderr_handle, &program)?;
+    while let Ok(line) = line_rx.try_recv() {
+        on_line(&line);
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// 执行命令并返回受控的标准输出结构。
@@ -165,6 +219,66 @@ fn poll_exit(
             }
         }
     }
+}
+
+fn poll_exit_streaming(
+    child: &mut Child,
+    timeout: Duration,
+    program: &str,
+    line_rx: &std::sync::mpsc::Receiver<String>,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<ExitStatus, CommandError> {
+    let started = Instant::now();
+    loop {
+        while let Ok(line) = line_rx.try_recv() {
+            on_line(&line);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if started.elapsed() < timeout => thread::sleep(POLL_INTERVAL),
+            Ok(None) => {
+                terminate_child(child);
+                return Err(CommandError::Timeout {
+                    command: program.to_string(),
+                    timeout_ms: timeout.as_millis(),
+                });
+            }
+            Err(source) => {
+                terminate_child(child);
+                return Err(CommandError::Wait {
+                    command: program.to_string(),
+                    source,
+                });
+            }
+        }
+    }
+}
+
+fn spawn_streaming_reader<R>(
+    stream: R,
+    line_tx: SyncSender<String>,
+) -> thread::JoinHandle<IoResult<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        let mut output = Vec::with_capacity(READ_CHUNK);
+        let mut line = Vec::with_capacity(256);
+        loop {
+            line.clear();
+            let read = reader.read_until(b'\n', &mut line)?;
+            if read == 0 {
+                return Ok(output);
+            }
+            let keep = OUTPUT_LIMIT.saturating_sub(output.len()).min(read);
+            output.extend_from_slice(&line[..keep]);
+            let text = String::from_utf8_lossy(&line).trim().to_string();
+            if !text.is_empty() {
+                let _ = line_tx.try_send(text);
+            }
+        }
+    })
 }
 
 fn spawn_reader<R>(mut stream: R) -> thread::JoinHandle<IoResult<Vec<u8>>>
