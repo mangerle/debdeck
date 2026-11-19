@@ -13,12 +13,10 @@ use std::path::{Path, PathBuf};
 use gpui_kit::{ClipboardItem, Context};
 
 use crate::app::state::{Action, Confirm, DebDeckApp, DownloadDialog, ModalState, Operation};
-use crate::backend::Result as BackendResult;
-use crate::backend::desktop::launch_desktop;
-use crate::backend::desktop::menu;
-use crate::backend::shell;
 use crate::model::{MenuEntryState, RepoPackage};
-use crate::runtime::{DownloadRequest, report_error};
+use crate::runtime::{
+    DownloadRequest, launch_desktop, open_directory, set_menu_visibility as runtime_set_menu,
+};
 
 struct MenuVisibilityChange {
     pkg: String,
@@ -30,7 +28,7 @@ struct MenuVisibilityChange {
 fn finish_menu_visibility(
     app: &mut DebDeckApp,
     change: MenuVisibilityChange,
-    result: BackendResult<MenuEntryState>,
+    result: Result<MenuEntryState, String>,
     cx: &mut Context<DebDeckApp>,
 ) {
     let MenuVisibilityChange {
@@ -46,9 +44,7 @@ fn finish_menu_visibility(
             };
             app.set_toast(message, cx);
         }
-        Err(error) => app
-            .dialogs
-            .set_message("无法修改应用菜单项", report_error(&error)),
+        Err(error) => app.dialogs.set_message("无法修改应用菜单项", error),
     }
     cx.notify();
 }
@@ -56,7 +52,7 @@ fn finish_menu_visibility(
 fn finish_open_directory(
     app: &mut DebDeckApp,
     path: &Path,
-    result: BackendResult<()>,
+    result: Result<(), String>,
     cx: &mut Context<DebDeckApp>,
 ) {
     if let Err(error) = result {
@@ -71,9 +67,7 @@ impl DebDeckApp {
         match action {
             Action::Open { desktop, name } => match launch_desktop(&desktop) {
                 Ok(()) => self.set_toast(format!("正在打开 {name}"), cx),
-                Err(error) => self
-                    .dialogs
-                    .set_message("无法打开应用", report_error(&error)),
+                Err(error) => self.dialogs.set_message("无法打开应用", error),
             },
             Action::OpenDownloads => {
                 let path = self.paths.downloads.clone();
@@ -122,7 +116,7 @@ impl DebDeckApp {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { menu::set_hidden(&path, hidden) })
+                .spawn(async move { runtime_set_menu(&path, hidden) })
                 .await;
             _ = this.update(cx, move |app, cx| {
                 finish_menu_visibility(app, change, result, cx);
@@ -137,7 +131,7 @@ impl DebDeckApp {
             let task_path = path.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { shell::open_directory(&task_path) })
+                .spawn(async move { open_directory(&task_path) })
                 .await;
             _ = this.update(cx, move |app, cx| {
                 finish_open_directory(app, &path, result, cx);

@@ -4,8 +4,8 @@
 //! 会通过 dpkg 状态监视自动刷新。文件管理器按 `Exec=debdeck %f` 为每个选中
 //! 文件单独启动一次，因此这里只处理命令行里的第一个 `.deb`。
 //!
-//! 管理员认证由 [`crate::backend::polkit_agent`] 内嵌完成：密码输入、重试、
-//! 取消都留在同一个窗口里，不再弹系统认证框。
+//! 管理员认证与包预检均通过 [`crate::runtime::install`] 交给后台执行：
+//! 密码输入、重试、取消都留在同一个窗口里，且不阻塞主线程打开窗口。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,9 +17,10 @@ use gpui_kit::{
     Window, px, size,
 };
 
-use crate::backend::deb_file;
-use crate::backend::polkit_agent::{self, AuthResponse, InstallEvent, InstallSession};
 use crate::model::DebFile;
+use crate::runtime::install::{
+    AuthResponse, InstallEvent, InstallSession, inspect_deb_file, start_install_session,
+};
 use crate::ui::install::{ACTION_BAR_HEIGHT, CONTENT_PADDING, CONTENT_SLACK, HEADER_HEIGHT};
 
 /// 安装窗口的最小高度。进行中和完成态的内容量不同，若不设下限，同一流程的
@@ -45,9 +46,20 @@ pub(crate) enum Phase {
     Done(Result<String, String>),
 }
 
+/// 安装包预检状态。
+#[derive(Clone)]
+pub(crate) enum InstallFile {
+    /// 正在后台解析 `.deb` 元数据。
+    Inspecting,
+    /// 预检通过。
+    Ready(Box<DebFile>),
+    /// 预检失败。
+    Failed(String),
+}
+
 /// 关闭按钮读取：授权/安装进行中不允许关窗，避免中断 apt/dpkg。
 pub(crate) struct InstallApp {
-    file: Result<DebFile, String>,
+    file: InstallFile,
     phase: Phase,
     app_icon: Option<Arc<RenderImage>>,
     running: Arc<AtomicBool>,
@@ -75,7 +87,7 @@ pub(crate) struct PasswordUi {
 
 impl InstallApp {
     pub(crate) fn new(path: &Path, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let file = deb_file::inspect(path).map_err(|error| format!("{error:#}"));
+        let deb_path = path.to_path_buf();
         let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("密码"));
         cx.subscribe(&password, |this, _, event, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -83,8 +95,24 @@ impl InstallApp {
             }
         })
         .detach();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { inspect_deb_file(&deb_path) })
+                .await;
+            _ = this.update(cx, |app, cx| {
+                app.file = match result {
+                    Ok(deb) => InstallFile::Ready(Box::new(deb)),
+                    Err(error) => InstallFile::Failed(error),
+                };
+                // 预检结果就绪后重新测量内容边界，调整到合适窗口高度。
+                app.window_height = px(0.0);
+                cx.notify();
+            });
+        })
+        .detach();
         Self {
-            file,
+            file: InstallFile::Inspecting,
             phase: Phase::Confirm,
             app_icon: crate::ui::app_icon_texture(),
             running: Arc::new(AtomicBool::new(false)),
@@ -130,8 +158,8 @@ impl InstallApp {
         !matches!(self.phase, Phase::Authorizing | Phase::Installing)
     }
 
-    pub(crate) fn file(&self) -> Result<&DebFile, &str> {
-        self.file.as_ref().map_err(String::as_str)
+    pub(crate) fn file(&self) -> &InstallFile {
+        &self.file
     }
 
     pub(crate) fn phase(&self) -> &Phase {
@@ -171,7 +199,9 @@ impl InstallApp {
 
     /// 用户确认后启动后台安装会话。
     pub(crate) fn start(&mut self, cx: &mut Context<Self>) {
-        let Ok(file) = &self.file else { return };
+        let InstallFile::Ready(file) = &self.file else {
+            return;
+        };
         if !matches!(self.phase, Phase::Confirm) {
             return;
         }
@@ -182,7 +212,7 @@ impl InstallApp {
         self.running.store(true, Ordering::Relaxed);
         self.note = None;
 
-        match polkit_agent::start(&path, name) {
+        match start_install_session(&path, name) {
             Ok(session) => {
                 let events = session.events.clone();
                 self.auth_tx = Some(session.responses.clone());
@@ -200,7 +230,7 @@ impl InstallApp {
                 .detach();
             }
             Err(error) => {
-                self.phase = Phase::Done(Err(format!("{error:#}")));
+                self.phase = Phase::Done(Err(error));
                 self.running.store(false, Ordering::Relaxed);
             }
         }

@@ -154,6 +154,11 @@ pub struct TaskManager {
 }
 
 impl TaskManager {
+    /// 使用系统默认路径布局启动全部 worker 线程，返回管理器与事件接收端。
+    pub fn start_system(wake: Waker) -> (Self, EventReceiver) {
+        Self::start(wake, FsLayout::system())
+    }
+
     /// 启动全部 worker 线程，返回管理器与事件接收端。
     pub fn start(wake: Waker, layout: FsLayout) -> (Self, EventReceiver) {
         let (event_tx, event_rx) = async_channel::bounded(EVENT_QUEUE_CAPACITY);

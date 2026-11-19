@@ -19,10 +19,11 @@ use std::sync::Arc;
 
 use gpui_kit::RenderImage;
 use gpui_kit::component::input::InputState;
-use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::app::{InstallApp, PasswordUi, Phase};
+use crate::app::{InstallApp, InstallFile, PasswordUi, Phase};
 use crate::model::DebFile;
 use crate::ui::APP_ICON_SIZE;
 use crate::util::APP_NAME;
@@ -52,7 +53,7 @@ pub(crate) fn show(
 ) -> impl IntoElement {
     apply_password_ui(app, window, cx);
     let note = app.note().map(str::to_string);
-    let file = app.file().cloned().map_err(str::to_string);
+    let file = app.file().clone();
     let phase = app.phase().clone();
     let title_bar = build_header(&file, app.app_icon(), window, cx);
     let (content, actions) = render_content(
@@ -101,21 +102,21 @@ fn update_password_state(
 }
 
 fn build_header(
-    file: &Result<DebFile, String>,
+    file: &InstallFile,
     app_icon: Option<Arc<RenderImage>>,
     window: &mut Window,
     cx: &mut Context<InstallApp>,
 ) -> AnyElement {
     let subtitle = match file {
-        Ok(file) => format!("安装 {}", file.metadata.name),
-        Err(_) => "安装软件包".to_string(),
+        InstallFile::Ready(file) => format!("安装 {}", file.metadata.name),
+        InstallFile::Inspecting | InstallFile::Failed(_) => "安装软件包".to_string(),
     };
     header(&subtitle, app_icon, window, cx)
 }
 
 struct ContentSpec<'a> {
     app: &'a mut InstallApp,
-    file: &'a Result<DebFile, String>,
+    file: &'a InstallFile,
     phase: Phase,
     note: Option<&'a str>,
 }
@@ -131,7 +132,8 @@ fn render_content(
         note,
     } = spec;
     match file {
-        Ok(file) => render_phase(
+        InstallFile::Inspecting => (inspecting(cx), Some(close_actions(cx))),
+        InstallFile::Ready(file) => render_phase(
             PhaseSpec {
                 app,
                 file,
@@ -140,11 +142,28 @@ fn render_content(
             },
             cx,
         ),
-        Err(error) => (
+        InstallFile::Failed(error) => (
             failure("无法安装安装包", "文件预检未通过。", error, cx),
             Some(close_actions(cx)),
         ),
     }
+}
+
+fn inspecting(cx: &Context<InstallApp>) -> AnyElement {
+    h_flex()
+        .w_full()
+        .py(px(28.0))
+        .items_center()
+        .justify_center()
+        .gap(px(10.0))
+        .child(Spinner::new().small())
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("正在解析安装包信息…"),
+        )
+        .into_any_element()
 }
 
 struct PhaseSpec<'a> {

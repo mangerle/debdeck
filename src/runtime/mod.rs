@@ -4,13 +4,14 @@
 //! `backend` 只被这里的 worker 线程调用。任何模块都不应该绕过 [`BackendEvent`]
 //! 从后端线程直接改应用状态。
 
+mod desktop;
 mod events;
+pub(crate) mod install;
 mod instance;
 mod tasks;
 mod watcher;
 
-pub(crate) use events::{
-    BackendEvent, CatalogUpdate, OperationId, UpgradableReport, Waker, report_error,
-};
+pub(crate) use desktop::{launch_desktop, notify, open_directory, set_menu_visibility};
+pub(crate) use events::{BackendEvent, CatalogUpdate, OperationId, UpgradableReport, Waker};
 pub use instance::InstanceLock;
 pub(crate) use tasks::{CancelToken, DownloadRequest, TaskManager, TaskSubmitError};

@@ -23,7 +23,7 @@ mod update;
 
 pub(crate) use catalog::Catalog;
 pub(crate) use dialogs::Dialogs;
-pub(crate) use install::{InstallApp, PasswordUi, Phase};
+pub(crate) use install::{InstallApp, InstallFile, PasswordUi, Phase};
 pub(crate) use list::ListView;
 pub(crate) use self_update::{SelfUpdatePrimaryAction, SelfUpdateSnapshot};
 // UI 层需要的状态类型集中再导出：`state` 本身保持私有，避免绘制代码绕过
@@ -45,9 +45,7 @@ use gpui_kit::component::select::{SearchableVec, SelectState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::backend::FsLayout;
-use crate::backend::shell;
-use crate::runtime::{BackendEvent, InstanceLock, TaskManager, Waker};
+use crate::runtime::{BackendEvent, InstanceLock, TaskManager, Waker, notify};
 use crate::ui::{APP_ICON_SIZE, DETAIL_ICON_TEXTURE_SIZE, window_icon};
 use crate::update::{RecoveryStatus, check_and_recover_on_startup, restart_current_process};
 use crate::util::{APP_ID, APP_NAME, AppPaths};
@@ -82,7 +80,7 @@ pub fn run() {
         Ok(instance) => instance,
         Err(message) => {
             tracing::error!("{message}");
-            shell::notify("DebDeck 已在运行", "已有 DebDeck 实例正在运行。");
+            notify("DebDeck 已在运行", "已有 DebDeck 实例正在运行。");
             return;
         }
     };
@@ -244,8 +242,7 @@ fn start_backend() -> (
         // 唤醒信号只需保留一个：队列满说明已有待处理的唤醒，重复发送没有意义。
         let _ = wake_tx.try_send(());
     });
-    let layout = FsLayout::system();
-    let (tasks, rx) = TaskManager::start(wake, layout);
+    let (tasks, rx) = TaskManager::start_system(wake);
     tasks.load_initial();
     (tasks, rx, wake_rx)
 }

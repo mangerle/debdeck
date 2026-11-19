@@ -38,4 +38,3 @@ pub mod repack;
 pub mod shell;
 
 pub(crate) use error::{BackendError, Result};
-pub use fs_layout::FsLayout;
